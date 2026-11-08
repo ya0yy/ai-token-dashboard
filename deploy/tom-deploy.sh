@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 安装到 tom 的 /usr/local/sbin/ai-token-dashboard-deploy，由专用 SSH 密钥强制调用。
+# 安装到 tom 的 /data/app/ai-token-dashboard/deploy.sh，由专用 SSH 密钥强制调用。
 # 不执行 SSH 客户端传入的命令，只从标准输入读取镜像、部署目录和提交号。
 set -Eeuo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -27,7 +27,7 @@ if [[ "$deploy_path" != /data/app/ai-token-dashboard || ! "$revision" =~ ^[a-f0-
   exit 1
 fi
 
-# 锁放在系统运行目录，部署目录仍只有 docker-compose.yml、.env 和 data/。
+# 锁放在系统运行目录，避免在项目目录添加临时运行文件。
 exec 9>/run/lock/ai-token-dashboard-deploy.lock
 if ! timeout --kill-after=5s 35s flock -w 30 9; then
   echo '错误：另一个部署仍在执行，请检查正在运行的 Actions 后重试。' >&2

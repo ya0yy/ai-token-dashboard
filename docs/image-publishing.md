@@ -53,12 +53,12 @@ docker compose up -d --no-build --wait --wait-timeout 90
 | Environment variable | `DASHBOARD_URL` | `https://tks.420114.xyz/` |
 | Environment secret | `SSH_PRIVATE_KEY` | 仅供此应用部署使用的 Ed25519 私钥 |
 
-服务端部署入口由仓库的 `deploy/tom-deploy.sh` 安装到 `/usr/local/sbin/ai-token-dashboard-deploy`，属主为 root，权限 `0755`。
+服务端部署入口由仓库的 `deploy/tom-deploy.sh` 安装到 `/data/app/ai-token-dashboard/deploy.sh`，与 Compose 配置放在同一目录，属主为 root，权限 `0755`。
 专用公钥在 `/root/.ssh/authorized_keys` 中使用 `restrict` 和强制命令，只允许调用该入口，不提供交互式 Shell、端口转发或任意远程命令。
 入口校验镜像仓库、摘要、部署目录、运行提交和容器健康状态；服务端入口有变更时需通过管理 SSH 单独更新。
 
 自动部署只拉取并启动 `ai-token-dashboard`，不上传源码，不修改 `.env` 或 `data/`。
-部署目录仍只保留 `docker-compose.yml`、`.env` 和 `data/`；临时互斥锁位于 `/run/lock/`。
+部署目录只保留 `docker-compose.yml`、`.env`、`data/` 和 `deploy.sh`；临时互斥锁位于 `/run/lock/`。
 同一分支的流水线不会中途取消正在运行的部署，SSH、拉取镜像和健康检查均有超时。
 拉取失败时不切换容器；切换后的健康检查失败会使工作流失败，不自动回滚数据库或容器。
 部署结果和错误可在 Actions 的“自动部署到 tom”作业查看，公网验证要求 HTTPS 控制台返回预期的 `401` 鉴权响应。
