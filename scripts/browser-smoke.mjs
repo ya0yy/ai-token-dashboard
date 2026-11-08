@@ -37,7 +37,8 @@ try {
 
   const total = page.locator('.kpi').first().locator('.visually-hidden');
   const expectTotal = value => page.waitForFunction(value => document.querySelector('.kpi .visually-hidden')?.textContent === value, value);
-  await expectTotal('5,940');
+  // 用量固定显示为M，校验原始5940个token对应的百万单位值。
+  await expectTotal('0.00594 M');
   // Deliver an older request after a newer range is already rendered.
   let releaseOld, oldStarted;
   const started = new Promise(resolve => { oldStarted = resolve; });
@@ -55,12 +56,12 @@ try {
   const newerResponse = page.waitForResponse(response => response.url().includes('/api/data?') && new URL(response.url()).searchParams.get('startDate') === '2026-09-04');
   await page.getByRole('button', { name: '14 天', exact: true }).click();
   await Promise.all([newerResponse, cancelledOld]);
-  await expectTotal('5,940'); releaseOld();
+  await expectTotal('0.00594 M'); releaseOld();
   await page.unroute('**/api/data?**', delayed);
-  assert.equal(await total.textContent(), '5,940');
+  assert.equal(await total.textContent(), '0.00594 M');
 
   await page.getByRole('button', { name: '今天', exact: true }).click();
-  await expectTotal('5,610');
+  await expectTotal('0.00561 M');
   let summaryFailure = true;
   await page.route('**/api/time/summary?**', route => summaryFailure ? (summaryFailure = false, route.fulfill({ status: 503, body: '{}' })) : route.continue());
   await page.locator('.dt-range-trigger').click();
@@ -69,7 +70,7 @@ try {
   const day = page.locator('.dt-day:not(.muted)').filter({ hasText: /^1$/ });
   await day.click(); await day.click();
   await page.getByRole('button', { name: '重试统计' }).click();
-  await expectTotal('5,610');
+  await expectTotal('0.00561 M');
   const summaryUrl = new URL(requests.filter(url => url.includes('/api/time/summary?')).at(-1));
   assert.equal(summaryUrl.searchParams.get('start'), '2026-09-30T16:00:00.000Z');
   assert.equal(summaryUrl.searchParams.get('end'), '2026-10-01T15:59:00.000Z');
