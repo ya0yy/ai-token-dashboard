@@ -124,6 +124,10 @@ jobs:
           python -m py_compile install.py run.py
           python install.py --help
           python run.py --help
+      - name: 检查部署脚本语法
+        run: |
+          bash -n deploy/tom-deploy.sh
+          bash -n deploy/github-deploy.sh
 
   publish-image:
     name: 构建并发布多架构镜像
@@ -206,81 +210,25 @@ jobs:
     # 标签仍发布镜像，只有 main 的成功构建可以更新线上服务。
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 25
     environment:
       name: tom
-      url: ${{ vars.DASHBOARD_URL }}
-    env:
-      SSH_HOST: ${{ vars.SSH_HOST }}
-      SSH_PORT: ${{ vars.SSH_PORT }}
-      SSH_USER: ${{ vars.SSH_USER }}
-      SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-      DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
-      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-      IMAGE_DIGEST: ${{ needs.publish-image.outputs.digest }}
-      IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
-      DEPLOY_REVISION: ${{ github.sha }}
+      url: ${{ vars.HEALTHCHECK_URL }}
     steps:
-      - name: 使用专用密钥部署本次构建的镜像
-        shell: bash
-        run: |
-          set -euo pipefail
-          for variable in SSH_HOST SSH_PORT SSH_USER SSH_KNOWN_HOSTS DEPLOY_PATH DASHBOARD_URL SSH_PRIVATE_KEY; do
-            if [[ -z "${!variable}" ]]; then
-              printf '错误：tom Environment 缺少配置，变量：%s。请检查 Variables 或 Secrets。\n' "$variable" >&2
-              exit 1
-            fi
-          done
-          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-            echo '错误：镜像发布作业未返回有效摘要，停止部署。' >&2
-            exit 1
-          fi
-          if [[ ! "$SSH_HOST" =~ ^[a-zA-Z0-9._:-]+$ || ! "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ || ! "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$SSH_PORT < 1 || 10#$SSH_PORT > 65535 )); then
-            echo '错误：SSH 主机、用户名或端口格式不正确，请检查 tom Environment。' >&2
-            exit 1
-          fi
-
-          # 密钥仅写入 Runner 临时目录；结束时清理，不上传到日志或产物。
-          umask 077
-          ssh_dir=$(mktemp -d "$RUNNER_TEMP/tom-ssh.XXXXXX")
-          trap 'rm -rf "$ssh_dir"' EXIT
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/key"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
-          ssh-keygen -y -f "$ssh_dir/key" > /dev/null
-          known_host="$SSH_HOST"
-          if [[ "$SSH_PORT" != 22 ]]; then known_host="[$SSH_HOST]:$SSH_PORT"; fi
-          if ! ssh-keygen -F "$known_host" -f "$ssh_dir/known_hosts" > /dev/null; then
-            echo '错误：SSH_KNOWN_HOSTS 中没有目标主机记录，请通过可信连接核对 SSH 主机公钥。' >&2
-            exit 1
-          fi
-
-          image="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
-          printf '开始部署，镜像：%s，提交：%s\n' "$image" "$DEPLOY_REVISION"
-          # 服务端通过 authorized_keys 强制进入固定部署入口，仅接受这三行数据。
-          printf '%s\n' "$image" "$DEPLOY_PATH" "$DEPLOY_REVISION" |
-            timeout --kill-after=10s 600s ssh -T \
-              -o BatchMode=yes -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" \
-              -o ConnectTimeout=10 -o ConnectionAttempts=1 \
-              -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
-              -i "$ssh_dir/key" -p "$SSH_PORT" "$SSH_USER@$SSH_HOST"
-
-      - name: 验证公网 HTTPS 控制台
-        shell: bash
-        run: |
-          set -euo pipefail
-          # 控制台启用了鉴权，未携带密码时必须返回 401。
-          status=$(curl --silent --show-error --proto '=https' --connect-timeout 10 --max-time 30 \
-            --output /dev/null --write-out '%{http_code}' "$DASHBOARD_URL")
-          if [[ "$status" != 401 ]]; then
-            printf '错误：公网控制台响应异常，HTTP 状态：%s。请检查 tom 容器和 webserver 反向代理。\n' "$status" >&2
-            exit 1
-          fi
-          printf '公网 HTTPS 控制台验证通过，HTTP 状态：%s\n' "$status"
-          {
-            echo '### tom 部署成功'
-            printf '镜像：`%s@%s`\n\n' "$IMAGE_REPOSITORY" "$IMAGE_DIGEST"
-            printf '提交：`%s`\n\n' "$DEPLOY_REVISION"
-            printf '控制台：%s，HTTP 状态：%s\n' "$DASHBOARD_URL" "$status"
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: 检出部署客户端
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 部署本次镜像并验证公网服务
+        env:
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_PORT: ${{ vars.SSH_PORT }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_IMAGE: ghcr.io/${{ github.repository }}@${{ needs.publish-image.outputs.digest }}
+          DEPLOY_REVISION: ${{ github.sha }}
+          HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}
+          HEALTHCHECK_STATUS: ${{ vars.HEALTHCHECK_STATUS }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: bash deploy/github-deploy.sh
