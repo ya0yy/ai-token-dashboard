@@ -621,6 +621,7 @@ function KPI({ label, value, numericValue, format = U.compactCN, sub, delta, dot
   const reduceMotion = useReducedMotion();
   const explanation = {
     '总 Token': '汇总采集记录中的总量，可能包含缓存和未细分用量。不要把所有展示项再次相加。',
+    '非缓存输入': '未使用缓存的输入 Token，直接汇总采集记录中的输入用量，不包含缓存读取和缓存创建。',
     '输出': '模型生成的输出用量。部分工具的推理 Token 已包含在输出中，不重复累加。',
     '缓存': '缓存读取 + 缓存创建。命中率为缓存读取 ÷ 总 Token。',
     '估算费用': '已有记录的费用汇总，可能来自工具记录或估价，不等同于实际账单或订阅支出。更新价格不会自动重算历史费用。'

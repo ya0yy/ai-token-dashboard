@@ -452,6 +452,12 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
           sub="vs 上周期"
           delta={U.deltaPct(totals.totalTokens, compareData.totals?.totalTokens)}
           sparkValues={sparkValues} sparkColor="oklch(0.55 0.16 265)" />
+        {/* 采集层已将缓存独立统计，inputTokens 可直接展示为非缓存输入。 */}
+        <KPI label="非缓存输入" value={U.compactCN(totals.inputTokens)}
+          numericValue={totals.inputTokens}
+          sub="输入"
+          delta={U.deltaPct(totals.inputTokens, compareData.totals?.inputTokens)}
+          sparkValues={sparkBy('inputTokens')} sparkColor="oklch(0.62 0.13 240)" />
         <KPI label="输出" value={U.compactCN(totals.outputTokens)}
           numericValue={totals.outputTokens}
           sub="生成"

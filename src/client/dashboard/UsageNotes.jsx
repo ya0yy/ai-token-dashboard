@@ -27,6 +27,7 @@ export function UsageNotes({ rows, pricing }) {
     <div className="usage-notes-grid">
       <section><h3>Token 怎么算</h3>
         <p>总 Token 汇总采集记录中的总量；不同工具可能包含缓存或未细分用量，不能简单把所有展示项再次相加。</p>
+        <p>非缓存输入是未使用缓存的输入用量，不包含缓存读取和缓存创建。</p>
         <p>输出是模型生成的用量。部分工具的推理 Token 已包含在输出中，不重复累加。</p>
       </section>
       <section><h3>缓存怎么算</h3>

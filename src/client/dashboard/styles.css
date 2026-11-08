@@ -985,12 +985,15 @@ button, input, select { font-family: inherit; color: inherit; }
 
 .kpi-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* 桌面端并排展示五项指标，窄屏沿用下方的分列布局。 */
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }
 
 .kpi {
+  /* 按卡片内容宽度约束字号，避免小额用量保留六位小数时被裁切。 */
+  container-type: inline-size;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -2142,7 +2145,7 @@ table.dt tbody tr.selected { background: var(--accent-soft); }
 .app .panel { border-radius: 10px; }
 .app .kpi { padding: 20px 20px 22px; min-height: 156px; border-radius: 9px; }
 .app .kpi-label { font-size: 14px; color: var(--text-2); margin-bottom: 12px; letter-spacing: 0; }
-.app .kpi-value { font-size: clamp(26px, 2.5vw, 38px); font-weight: 650; }
+.app .kpi-value { font-size: min(clamp(26px, 2.5vw, 38px), 16cqi); font-weight: 650; }
 .app .kpi-sub { font-size: 12px; margin-top: 12px; }
 .app .panel-title { font-size: 15px; }
 .app .filterbar { padding: 16px; gap: 12px; }
@@ -2199,7 +2202,7 @@ body:has(dialog[open]) { overflow: hidden; }
 }
 @media (max-width: 640px) {
   .app .kpi { padding: 14px; min-height: 138px; }
-  .app .kpi-value { font-size: 25px; }
+  .app .kpi-value { font-size: min(25px, 16cqi); }
   .app .kpi-label { font-size: 12px; margin-bottom: 8px; }
   .app .kpi-sub { flex-wrap: wrap; gap: 4px; font-size: 11px; }
   .app .filterbar { padding: 12px; }
