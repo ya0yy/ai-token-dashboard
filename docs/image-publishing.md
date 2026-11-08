@@ -48,6 +48,6 @@ upstream  https://github.com/fengguanghuai/ai-token-dashboard.git
 
 ## 构建内容
 
-Dockerfile 复制应用源码、数据库结构、采集配置、公共静态资源和两份定价快照，再编译前端。
+Dockerfile 分为前端构建和运行阶段：前端在构建机原生架构编译，目标架构只安装生产依赖，并复制应用源码、数据库结构、采集配置、两份定价快照和已编译的前端。
 `.dockerignore` 使用文件白名单，机器配置、使用记录、凭据、日志、Git 目录和本地运行快照不进入构建上下文。
 应用运行时的 `INGEST_TOKEN`、`DASHBOARD_TOKEN` 通过 `.env` 传入，不放进镜像或工作流。
