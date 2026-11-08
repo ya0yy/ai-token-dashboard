@@ -35,7 +35,36 @@ docker compose up -d --no-build --wait --wait-timeout 90
 
 可通过 `.env` 中的 `AI_TOKEN_DASHBOARD_IMAGE` 指定版本标签或镜像摘要。
 正式部署配置只拉取镜像，不含 `build`，服务器不需要保留源码。开发者如需本地构建，可在源码仓库执行 `docker build -t ghcr.io/ya0yy/ai-token-dashboard:local .`。
-流水线负责镜像检查、构建和发布，服务器更新由部署者执行。
+`main` 的镜像发布成功后，流水线会自动通过 SSH 更新 tom；版本标签只发布镜像。
+部署使用本次构建返回的镜像摘要，不依赖可变化的 `latest` 标签。
+
+## tom 自动部署
+
+在仓库的 **Settings → Environments → tom** 中维护配置。
+该环境只允许 `main` 分支部署，不设置人工审批，以便成功构建后自动上线。
+
+| 类型 | 名称 | 用途 |
+| --- | --- | --- |
+| Environment variable | `SSH_HOST` | tom 的 SSH 主机地址 |
+| Environment variable | `SSH_PORT` | SSH 端口 |
+| Environment variable | `SSH_USER` | SSH 用户 |
+| Environment variable | `SSH_KNOWN_HOSTS` | 通过可信连接核对的主机公钥记录，用于严格校验服务器身份 |
+| Environment variable | `DEPLOY_PATH` | `/data/app/ai-token-dashboard` |
+| Environment variable | `DASHBOARD_URL` | `https://tks.420114.xyz/` |
+| Environment secret | `SSH_PRIVATE_KEY` | 仅供此应用部署使用的 Ed25519 私钥 |
+
+服务端部署入口由仓库的 `deploy/tom-deploy.sh` 安装到 `/usr/local/sbin/ai-token-dashboard-deploy`，属主为 root，权限 `0755`。
+专用公钥在 `/root/.ssh/authorized_keys` 中使用 `restrict` 和强制命令，只允许调用该入口，不提供交互式 Shell、端口转发或任意远程命令。
+入口校验镜像仓库、摘要、部署目录、运行提交和容器健康状态；服务端入口有变更时需通过管理 SSH 单独更新。
+
+自动部署只拉取并启动 `ai-token-dashboard`，不上传源码，不修改 `.env` 或 `data/`。
+部署目录仍只保留 `docker-compose.yml`、`.env` 和 `data/`；临时互斥锁位于 `/run/lock/`。
+同一分支的流水线不会中途取消正在运行的部署，SSH、拉取镜像和健康检查均有超时。
+拉取失败时不切换容器；切换后的健康检查失败会使工作流失败，不自动回滚数据库或容器。
+部署结果和错误可在 Actions 的“自动部署到 tom”作业查看，公网验证要求 HTTPS 控制台返回预期的 `401` 鉴权响应。
+
+后续更新 `main` 即可自动上线，也可以在 Actions 中选择 `main` 手动运行工作流。
+若修改了 Compose 配置或新增运行环境变量，仍需通过管理 SSH 同步服务器配置后再部署。
 
 ## 本地 Git 关系
 
