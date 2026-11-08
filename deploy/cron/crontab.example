@@ -1,0 +1,4 @@
+# 由install.py生成本机绝对路径，其他用户任务应保留。
+# BEGIN AI_TOKEN_DASHBOARD
+*/5 * * * * /absolute/path/to/python3 '/absolute/path/to/ai-token-dashboard/run.py' --scheduled >> '/absolute/path/to/ai-token-dashboard/logs/collector.out.log' 2>> '/absolute/path/to/ai-token-dashboard/logs/collector.err.log'
+# END AI_TOKEN_DASHBOARD

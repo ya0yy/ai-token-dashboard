@@ -1,0 +1,33 @@
+--- a/src/collect.mjs
++++ b/src/collect.mjs
+@@ -45,6 +45,12 @@
+     console.log(`[push] ${JSON.stringify(result)}`);
+   }
+ } finally { await db.close(); }
++
++// 推送协议要求定价版本为字符串，避免增量日志保留数字后被服务端拒绝。
++function pricingVersionText() {
++  const version = pricingSnapshotTime();
++  return version == null ? null : String(version);
++}
+ 
+ async function collectLocal() {
+   let anyError = false;
+@@ -153,7 +159,7 @@
+       totalTokens,
+       costUSD: entry.cost || 0,
+       costBasis: entry.costBasis || (hasModelPricing(model, pricingData) ? 'estimated' : 'unknown'),
+-      pricingVersion: entry.costBasis === 'recorded' ? null : pricingSnapshotTime()
++      pricingVersion: entry.costBasis === 'recorded' ? null : pricingVersionText()
+     };
+   }).filter(row => row.eventTime && row.usageDate && row.totalTokens > 0);
+ }
+@@ -190,7 +196,7 @@
+         totalTokens: tokenTotal(tokens, entry.client),
+         costUSD: entry.cost || 0,
+         costBasis: 'unknown',
+-        pricingVersion: pricingSnapshotTime()
++        pricingVersion: pricingVersionText()
+       };
+     });
+   });

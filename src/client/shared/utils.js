@@ -53,22 +53,18 @@ function getSourceColor(name) {
 const fmt   = new Intl.NumberFormat('zh-CN');
 const fmtUS = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtUS4 = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 });
+const fmtM = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
+const fmtSmallM = new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 });
 
 function compact(v) {
   if (v == null) return '—';
-  const a = Math.abs(v);
-  if (a >= 1e9) return (v / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
-  if (a >= 1e6) return (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (a >= 1e3) return (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
-  return fmt.format(v);
+  // 固定使用百万 token；小额用量保留精度，避免被四舍五入成零。
+  const formatter = Math.abs(v) < 1e6 ? fmtSmallM : fmtM;
+  return formatter.format(v / 1e6) + ' M';
 }
 
 function compactCN(v) {
-  if (v == null) return '—';
-  const a = Math.abs(v);
-  if (a >= 1e8) return (v / 1e8).toFixed(2).replace(/\.?0+$/, '') + ' 亿';
-  if (a >= 1e4) return (v / 1e4).toFixed(1).replace(/\.0$/, '') + ' 万';
-  return fmt.format(v);
+  return compact(v);
 }
 
 function pct(num, den) {

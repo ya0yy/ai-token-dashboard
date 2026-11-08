@@ -12,3 +12,16 @@ dist/
 !.env.example
 .claude/
 .superpowers/
+
+# 本地采集配置、运行文件和分发归档
+client.json
+.collector.lock
+ssh-control
+logs/
+__pycache__/
+*.py[cod]
+artifacts/
+work/
+last-run.json
+# 本机运行历史仅在本地保留，不发布用户目录和SDK路径快照。
+deploy/current-mac/

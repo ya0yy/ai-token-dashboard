@@ -1,0 +1,69 @@
+AI Token Dashboard：crontab + 公网 HTTPS 客户端
+
+运行环境
+使用实际保存 AI 日志的用户运行，准备 Node.js 22.15以上、Python 3.9以上、crontab。
+Mac / Linux 使用同一安装器；客户端不再依赖 SSH、launchd 或应用专用 systemd 单元。
+Linux 需要系统的 cron/crond 调度器已启动。Mac 会由系统运行 cron。
+公网端点：https://tks.420114.xyz/api/ingest
+
+新设备安装
+在完整源码目录或解压后的Python客户端包根目录执行：
+python3 install.py --device mac-home
+Linux 使用不同设备名称，例如：
+python3 install.py --device linux-dev
+首次安装输入 ingestToken，输入不回显；它与网页登录密码不同。
+
+重装已有客户端
+在维护源码目录执行：
+python3 install.py
+也可显式指定完整公网地址：
+python3 install.py --push-url https://tks.420114.xyz/api/ingest
+安装器自动读取原设备名、采集令牌和时区；拒绝通过重装把已有设备改名。
+旧Mac的 ~/.config/ai-token-dashboard/collector.json 也可自动迁入新运行配置。
+重装保留 data/usage.sqlite、解析缓存与定价快照，并先保存数据库一致性备份。
+切换上报URL后会创建新同步目标，首次可能重传历史；服务端按设备和记录键Upsert，不做重复累加。
+已有其他cron任务会保留，应用自己的标记块会替换，重复安装不会增加第二条任务。
+旧应用launchd配置或systemd单元会停用并备份；旧SSH隧道会一并停用。
+安装期间如失败，会尝试恢复旧代码和调度；保留已采集的新数据。
+
+运行目录
+Mac：~/Library/Application Support/ai-token-dashboard
+Linux：~/.local/share/ai-token-dashboard
+client.json：运行配置，权限600，包含 device / ingestToken / pushUrl / timezone / node。
+data/usage.sqlite：本机用量与同步进度。
+logs/collector.out.log、logs/collector.err.log：定时任务日志。
+last-run.json：最近一次实际执行状态，trigger为cron/manual，status为running/ok/error。
+backups/cron-migration-*：重装前代码、配置、旧任务和SQLite备份；其中可能有真实凭据，请保留私密权限。
+
+调度与传输
+用户crontab中使用 BEGIN AI_TOKEN_DASHBOARD / END AI_TOKEN_DASHBOARD 标记块。
+计划为 */5 * * * *，使用Python的绝对路径调用 run.py --scheduled。
+每轮直接通过HTTPS访问上报端点，使用 ingestToken 的 Bearer 鉴权。
+采集仍由原生 Node.js src/collect.mjs 完成，首次已有历史、之后变化记录。
+run.py用文件锁防止并行重叠；单轮采集和推送限时15分钟，失败留给下一轮重试。
+凭据保存在JSON里，不写进crontab或操作系统命令行参数。
+机器关机或睡眠时不会执行任务；cron环境不会依赖终端的asdf初始化。
+
+检查
+crontab -l
+Mac检查公网连接：
+python3 "$HOME/Library/Application Support/ai-token-dashboard/run.py" --check
+Mac手动执行：
+python3 "$HOME/Library/Application Support/ai-token-dashboard/run.py"
+Linux检查公网连接：
+python3 "$HOME/.local/share/ai-token-dashboard/run.py" --check
+Linux手动执行：
+python3 "$HOME/.local/share/ai-token-dashboard/run.py"
+
+停用
+执行 crontab -e，仅删除应用标记块，保留其他任务和本机数据库。
+不要直接清空整个crontab。
+
+代码说明
+install.py：新安装、原地重装、旧任务迁移、备份与cron注册。
+run.py：互斥锁、HTTPS连接检查、15分钟超时和最近执行状态。
+collector-entry.mjs：复用 collector-entry-manual.mjs 的配置读取与公网推送逻辑。
+已包含 pricingVersion 字符串兼容补丁。
+
+macOS完全磁盘访问
+若写入crontab超时，系统TCC可能在请求当前终端应用的“完全磁盘访问”。可在系统终端运行安装器，或在系统设置中给发起安装的应用开启相应权限后再运行。安装器现在先验证cron写入，验证未通过时保留旧任务。

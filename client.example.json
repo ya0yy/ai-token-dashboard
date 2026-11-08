@@ -1,0 +1,6 @@
+{
+  "device": "mac-home",
+  "ingestToken": "REPLACE_WITH_INGEST_TOKEN",
+  "pushUrl": "https://tks.420114.xyz/api/ingest",
+  "timezone": "Asia/Shanghai"
+}

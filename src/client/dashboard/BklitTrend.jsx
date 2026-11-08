@@ -50,7 +50,7 @@ export default function BklitTrend({rows,dates,sources,compareRows,compareDates,
     ? [new Date(+visible[0].date-43200000),new Date(+visible[visible.length-1].date+43200000)] : undefined;
   return <div className="bklit-trend">
     <div className="bklit-canvas" role="img" aria-label={`每日用量${mode==='line'?'折线':mode==='stacked'?'堆叠':'柱状'}图，${dates[start]} 至 ${dates[end]}。精确数据可通过图表明细查看或导出。`}>
-      <LineChart data={visible} xDomain={barDomain} style={{height:'100%'}} margin={{left:48,right:18,top:20,bottom:38}} animationDuration={reduceMotion?0:550} yDomainTween={!reduceMotion}>
+      <LineChart data={visible} xDomain={barDomain} style={{height:'100%'}} margin={{left:76,right:18,top:20,bottom:38}} animationDuration={reduceMotion?0:550} yDomainTween={!reduceMotion}>
         <Grid horizontal numTicksRows={4}/>
         {mode==='line' ? sources.map((name,i)=><Line key={name} dataKey={`source${i}`} curve={curveMonotoneX} stroke={colors[i]} strokeWidth={2.2} fadeEdges={false} animate={!reduceMotion} showMarkers={visible.length<=2}/>) : <>
           <Line dataKey="total" stroke="transparent" strokeWidth={0} showMarkers={false} animate={false}/>

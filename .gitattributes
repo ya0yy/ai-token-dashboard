@@ -1,0 +1,2 @@
+# 补丁空上下文行包含diff前缀空格，保留原始补丁格式。
+*.patch -whitespace
