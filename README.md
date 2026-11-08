@@ -2,6 +2,14 @@
 
 > 此 fork 包含 M 单位显示、cron / HTTPS 客户端和 GHCR 自动镜像发布。使用说明见[镜像构建与发布](docs/image-publishing.md)。
 
+[![CI and Docker image](https://github.com/ya0yy/ai-token-dashboard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ya0yy/ai-token-dashboard/actions/workflows/ci.yml)
+
+推送 `main` 后，CI 检查通过会自动发布 `ghcr.io/ya0yy/ai-token-dashboard:latest`，同时提供 amd64 和 arm64 镜像。公开包可直接拉取，私有包需先登录 GHCR：
+
+```bash
+docker pull ghcr.io/ya0yy/ai-token-dashboard:latest
+```
+
 [English](README.en.md) | **中文**
 
 [当前状态与后续工作](docs/project-status.md) · 查看已完成范围、原始待办和验收条件。
