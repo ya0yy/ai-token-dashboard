@@ -4,6 +4,7 @@
 !.dockerignore
 !package.json
 !package-lock.json
+!LICENSE
 !index.html
 !vite.config.js
 !src/

@@ -5,6 +5,7 @@ LABEL org.opencontainers.image.source="https://github.com/ya0yy/ai-token-dashboa
 
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY LICENSE ./LICENSE
 RUN npm ci
 
 COPY src ./src
