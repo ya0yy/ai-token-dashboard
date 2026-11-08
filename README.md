@@ -1,5 +1,7 @@
 # AI Token Dashboard
 
+> 此 fork 包含 M 单位显示、cron / HTTPS 客户端和 GHCR 自动镜像发布。使用说明见[镜像构建与发布](docs/image-publishing.md)。
+
 [English](README.en.md) | **中文**
 
 [当前状态与后续工作](docs/project-status.md) · 查看已完成范围、原始待办和验收条件。

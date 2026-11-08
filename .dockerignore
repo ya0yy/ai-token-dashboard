@@ -1,0 +1,19 @@
+# 仅允许镜像构建需要的文件，排除Git凭据、运行配置和个人用量。
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!package-lock.json
+!index.html
+!vite.config.js
+!src/
+!src/**
+!db/
+!db/**
+!config/
+!config/**
+!public/
+!public/**
+!data/
+!data/pricing-litellm.json
+!data/pricing-openrouter.json

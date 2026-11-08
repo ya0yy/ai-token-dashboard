@@ -1,0 +1,33 @@
+AI Token Dashboard fork 定制说明
+
+上游：https://github.com/fengguanghuai/ai-token-dashboard
+Fork：https://github.com/ya0yy/ai-token-dashboard
+定制基础提交：b59ab94f0c9decf7d548dfbdbef36209746790a8
+维护分支：main，推送到origin；原仓库保留为upstream。
+
+应用定制
+src/collect.mjs：将非空pricingVersion转为字符串，修复增量上报HTTP 400。
+src/client/shared/utils.js：Token用量统一显示为M（百万），小额用量保留精度。
+src/client/dashboard/BklitTrend.jsx：为M单位扩大纵轴标签空间。
+patches/：保留相对于上游基础版本的两份补丁，供同步上游时核对。
+
+客户端
+install.py：Mac/Linux新安装及原地重装，使用crontab，每5分钟通过公网HTTPS上报。
+run.py：互斥锁、15分钟超时、连接检查和last-run.json状态记录。
+collector-entry.mjs、collector-entry-manual.mjs：运行时读取client.json，令牌不进入系统命令行参数。
+collect-once.mjs：纯Node手动执行封装。
+client.example.json：公开示例，不包含真实令牌。
+新安装指定唯一--device；重装沿用原设备名和SQLite，避免把同一历史识别为另一台机器。
+说明：docs/client-python-install.txt、docs/client-manual-install.txt。
+
+服务端与镜像
+compose.deploy.yml：支持使用GHCR镜像，也保留显式源码构建能力。
+deploy/tom.env.example：不含真实令牌的运行环境模板。
+deploy/nginx/：HTTPS反向代理配置。
+.github/workflows/ci.yml：检查全部通过后发布amd64/arm64镜像。
+镜像与触发规则：docs/image-publishing.md。
+
+本地文件
+.env、client.json、数据库、日志、缓存、work/和artifacts/均由Git忽略。
+deploy/current-mac/仅为本地旧运行快照，不提交到fork。
+程序安装后的运行目录与本仓库独立，修改维护源码后需重新安装客户端或更新服务端镜像才会生效。
