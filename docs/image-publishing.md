@@ -34,7 +34,7 @@ docker compose -f compose.deploy.yml up -d --no-build --wait --wait-timeout 90
 ```
 
 可通过 `.env` 中的 `AI_TOKEN_DASHBOARD_IMAGE` 指定版本标签或镜像摘要。
-如需从源码构建，配置中仍保留 `build: .`，可显式执行 `docker compose -f compose.deploy.yml build`。
+正式部署配置只拉取镜像，不含 `build`，服务器不需要保留源码。开发者如需本地构建，可在源码仓库执行 `docker build -t ghcr.io/ya0yy/ai-token-dashboard:local .`。
 流水线负责镜像检查、构建和发布，服务器更新由部署者执行。
 
 ## 本地 Git 关系

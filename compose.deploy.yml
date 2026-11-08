@@ -1,7 +1,7 @@
 services:
   ai-token-dashboard:
-    build: .
     image: "${AI_TOKEN_DASHBOARD_IMAGE:-ghcr.io/ya0yy/ai-token-dashboard:latest}"
+    pull_policy: always
     container_name: ai-token-dashboard
     init: true
     restart: unless-stopped
