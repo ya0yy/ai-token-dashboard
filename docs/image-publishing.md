@@ -26,11 +26,11 @@ GHCR 首次创建的包默认为私有。如果要匿名拉取，在 GitHub 的�
 私有包拉取需要先使用具有 `read:packages` 权限的经典 PAT 登录 `ghcr.io`。
 相关权限说明见 [GitHub Container registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
 
-使用根目录 `compose.deploy.yml` 时，在保留服务器现有 `.env` 和 `data/` 的前提下更新配置，然后执行：
+使用根目录 `docker-compose.yml` 时，在保留服务器现有 `.env` 和 `data/` 的前提下更新配置，然后执行：
 
 ```bash
-docker compose -f compose.deploy.yml pull
-docker compose -f compose.deploy.yml up -d --no-build --wait --wait-timeout 90
+docker compose pull
+docker compose up -d --no-build --wait --wait-timeout 90
 ```
 
 可通过 `.env` 中的 `AI_TOKEN_DASHBOARD_IMAGE` 指定版本标签或镜像摘要。

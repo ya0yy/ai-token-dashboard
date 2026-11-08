@@ -206,7 +206,10 @@ hub 会合并每日记录和事件明细。浏览器登录时用户名任意，�
 适合作为中心看板和 ingest 服务部署：
 
 ```bash
-INGEST_TOKEN="your-secret-token" docker compose up -d
+cp deploy/tom.env.example .env
+# 填写 .env 中的 INGEST_TOKEN 和 DASHBOARD_TOKEN
+docker compose pull
+docker compose up -d
 ```
 
 数据写入挂载的 `./data` 目录。**本机日志采集建议在宿主机执行**，因为各 Agent/CLI 的会话文件保存在宿主机用户目录中。
@@ -215,7 +218,7 @@ INGEST_TOKEN="your-secret-token" docker compose up -d
 
 服务内置定时采集能力，默认关闭。开启后，服务会按配置间隔自动执行一次本机采集；Docker 和普通 `npm run serve` 启动走的是同一套逻辑。
 
-如果用 Docker 采集，需要把宿主机的 AI 工具日志目录挂载进容器。`docker-compose.yml` 已内置相关环境变量和挂载，默认采集间隔为 5 分钟（默认未启用定时采集），并写入同一个 `./data/usage.sqlite`。
+如果用 Docker 采集，需要把宿主机的 AI 工具日志目录挂载进容器。`docker-compose.source.yml` 已内置相关环境变量和挂载，默认采集间隔为 5 分钟（默认未启用定时采集），并写入同一个 `./data/usage.sqlite`。
 
 Linux/macOS 示例：
 
@@ -226,7 +229,7 @@ export SCHEDULED_COLLECT_ENABLED=true
 export SCHEDULED_COLLECT_RUN_ON_START=true
 export COLLECT_DEVICE="my-laptop"
 export SCHEDULED_COLLECT_INTERVAL_SECONDS=300
-docker compose up -d
+docker compose -f docker-compose.source.yml up -d
 ```
 
 PowerShell 示例：
@@ -238,7 +241,7 @@ $env:SCHEDULED_COLLECT_ENABLED = "true"
 $env:SCHEDULED_COLLECT_RUN_ON_START = "true"
 $env:COLLECT_DEVICE = "my-laptop"
 $env:SCHEDULED_COLLECT_INTERVAL_SECONDS = "300"
-docker compose up -d
+docker compose -f docker-compose.source.yml up -d
 ```
 
 注意：

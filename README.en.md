@@ -196,7 +196,10 @@ The hub merges daily records and event details. Sign in with any username and `D
 Best suited for running the hub/ingest server:
 
 ```bash
-INGEST_TOKEN="your-secret-token" docker compose up -d
+cp deploy/tom.env.example .env
+# Set INGEST_TOKEN and DASHBOARD_TOKEN in .env
+docker compose pull
+docker compose up -d
 ```
 
 Data is written to the mounted `./data` volume. **Local log collection should run on the host**, as agent session files live in the host user's home directory.
@@ -205,7 +208,7 @@ Data is written to the mounted `./data` volume. **Local log collection should ru
 
 The server has built-in scheduled collection. It is disabled by default. Once enabled, the server runs local collection at the configured interval; Docker and plain `npm run serve` use the same scheduler.
 
-When collecting from Docker, mount the host user's AI tool log directory into the container. `docker-compose.yml` includes the required environment variables and mount. The default interval is 5 minutes and data is written to the same `./data/usage.sqlite` database.
+When collecting from Docker, mount the host user's AI tool log directory into the container. `docker-compose.source.yml` includes the required environment variables and mount. The default interval is 5 minutes and data is written to the same `./data/usage.sqlite` database.
 
 Linux/macOS:
 
@@ -216,7 +219,7 @@ export SCHEDULED_COLLECT_ENABLED=true
 export SCHEDULED_COLLECT_RUN_ON_START=true
 export COLLECT_DEVICE="my-laptop"
 export SCHEDULED_COLLECT_INTERVAL_SECONDS=300
-docker compose up -d
+docker compose -f docker-compose.source.yml up -d
 ```
 
 PowerShell:
@@ -228,7 +231,7 @@ $env:SCHEDULED_COLLECT_ENABLED = "true"
 $env:SCHEDULED_COLLECT_RUN_ON_START = "true"
 $env:COLLECT_DEVICE = "my-laptop"
 $env:SCHEDULED_COLLECT_INTERVAL_SECONDS = "300"
-docker compose up -d
+docker compose -f docker-compose.source.yml up -d
 ```
 
 Notes:

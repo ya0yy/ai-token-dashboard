@@ -21,7 +21,7 @@ client.example.json：公开示例，不包含真实令牌。
 说明：docs/client-python-install.txt、docs/client-manual-install.txt。
 
 服务端与镜像
-compose.deploy.yml：只拉取GHCR镜像，部署服务器无需源码或本地构建。
+docker-compose.yml：只拉取GHCR镜像，部署服务器无需源码或本地构建。
 deploy/tom.env.example：不含真实令牌的运行环境模板。
 deploy/nginx/：HTTPS反向代理配置。
 .github/workflows/ci.yml：检查全部通过后发布amd64/arm64镜像。
