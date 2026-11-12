@@ -442,11 +442,12 @@ function DrillDrawer({ drill, daily, rangeLabel, eventQuery, revision, onClose }
 
                   <div className="detail-section">
                     <h4>分布</h4>
-                    <div className="detail-row"><span className="k">Input</span><span className="v">{U.fmt.format(detail.totals.inputTokens)}</span></div>
-                    <div className="detail-row"><span className="k">Output</span><span className="v">{U.fmt.format(detail.totals.outputTokens)}</span></div>
-                    <div className="detail-row"><span className="k">Cache Read</span><span className="v">{U.fmt.format(detail.totals.cacheReadTokens)}</span></div>
-                    <div className="detail-row"><span className="k">Cache Creation</span><span className="v">{U.fmt.format(detail.totals.cacheCreationTokens)}</span></div>
-                    <div className="detail-row"><span className="k">Reasoning</span><span className="v">{U.fmt.format(detail.totals.reasoningTokens)}</span></div>
+                    {/* 与总量统一使用百万 Token 单位，小额用量保留精度。 */}
+                    <div className="detail-row"><span className="k">Input</span><span className="v">{U.compactCN(detail.totals.inputTokens)}</span></div>
+                    <div className="detail-row"><span className="k">Output</span><span className="v">{U.compactCN(detail.totals.outputTokens)}</span></div>
+                    <div className="detail-row"><span className="k">Cache Read</span><span className="v">{U.compactCN(detail.totals.cacheReadTokens)}</span></div>
+                    <div className="detail-row"><span className="k">Cache Creation</span><span className="v">{U.compactCN(detail.totals.cacheCreationTokens)}</span></div>
+                    <div className="detail-row"><span className="k">Reasoning</span><span className="v">{U.compactCN(detail.totals.reasoningTokens)}</span></div>
                     <div className="detail-row"><span className="k">缓存命中率</span><span className="v" style={{color:'var(--c-indigo)', fontWeight: 600}}>{detail.totals.cacheHitRate.toFixed(1)}%</span></div>
                   </div>
 
