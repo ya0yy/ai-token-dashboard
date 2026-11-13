@@ -113,9 +113,9 @@ http://localhost:4173/review # 复盘视图
 
 分享诊断报告可用 `npm run --silent doctor -- --json`（不包含连接串、令牌、个人路径和原始采集错误）。自定义设备名用 `--device <名称>` 检查。详细状态和边界见 [诊断说明](docs/doctor.md)。
 
-贡献者可运行 `npm run test:onboarding`，用临时数据库及合成日志验证构建、首次/重复采集和页面/API；不会采集个人日志。CI 在 macOS、Linux、Windows 上执行此流程。
+贡献者可运行 `npm run test:onboarding`，用临时数据库及合成日志验证构建、首次/重复采集和页面/API；不会采集个人日志。CI 在 Linux 上执行此流程。
 
-升级前请阅读[版本说明](CHANGELOG.md)和[升级、备份与回退](docs/release.md)。`npm run test:release` 在首次安装流程之外验证旧 SQLite 升级、历史金额保留、同步和备份恢复；CI 在三个平台执行。支持范围与限制也记录在升级文档中。
+升级前请阅读[版本说明](CHANGELOG.md)和[升级、备份与回退](docs/release.md)。`npm run test:release` 在首次安装流程之外验证旧 SQLite 升级、历史金额保留、同步和备份恢复；CI 在 Linux 上执行。支持范围与限制也记录在升级文档中。
 
 浏览器回归：首次执行 `npx playwright install chromium`，再运行 `npm run test:browser`。它使用合成用量验证跨时区筛选、分页、导出、重试和移动布局；CI 在 Linux 执行。
 

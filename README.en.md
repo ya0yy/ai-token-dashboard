@@ -103,9 +103,9 @@ Run `npm run doctor` when startup or collection fails, or collection returns no 
 
 Use `npm run --silent doctor -- --json` for a shareable report (no connection strings, tokens, personal paths or raw collection errors). Use `--device <name>` for custom device names. See [diagnostic details](docs/doctor.md) for statuses and limitations.
 
-Contributors can run `npm run test:onboarding` to verify the build, first/repeated collection, and pages/APIs with synthetic logs and a temporary database. It does not collect personal logs. CI runs this flow on macOS, Linux, and Windows.
+Contributors can run `npm run test:onboarding` to verify the build, first/repeated collection, and pages/APIs with synthetic logs and a temporary database. It does not collect personal logs. CI runs this flow on Linux.
 
-Before upgrading, read the [changelog](CHANGELOG.md) and [upgrade, backup and rollback guide](docs/release.md) (Chinese). `npm run test:release` also verifies a pre-journal SQLite upgrade, historical values, synchronization and backup restoration on all three CI platforms. See that guide for support boundaries; CI does not certify every vendor log version on every OS.
+Before upgrading, read the [changelog](CHANGELOG.md) and [upgrade, backup and rollback guide](docs/release.md) (Chinese). `npm run test:release` also verifies a pre-journal SQLite upgrade, historical values, synchronization and backup restoration in Linux CI. See the guide for support boundaries.
 
 For browser regression checks, run `npx playwright install chromium` once, then `npm run test:browser`. Synthetic usage covers timezone boundaries, pagination, exports, retries and mobile layouts. CI runs this on Linux.
 

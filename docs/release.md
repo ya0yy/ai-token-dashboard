@@ -46,7 +46,7 @@ Codex 的 `CODEX_LOG_APPEND_ONLY` 和 Claude 的 `CLAUDE_LOG_APPEND_ONLY` 分别
 
 | 维度 | 已有验证与边界 |
 | --- | --- |
-| 系统与运行时 | Node ≥22.15；macOS、Linux、Windows CI 执行构建、合成采集和升级验收。真实 Chromium 交互在 Linux CI 验证。不能据此宣称每个平台上的全部厂商客户端日志均经过真实环境验收。 |
+| 系统与运行时 | Node ≥22.15。Linux CI 验证构建、合成采集、升级和 Chromium 交互。macOS、Windows 的本地采集和安装兼容性需在相应系统上验证。 |
 | 数据库 | SQLite 为默认；CI 验证 PostgreSQL 16、MySQL 8.4。MySQL 展示时区统计需要正确加载时区表。其他版本和托管网络配置需单独检查。 |
 | 采集器 | 九类来源见[采集器说明](local-collectors.md)。日志格式兼容性取决于实际客户端版本，未配置来源不产生日志。Gemini 当前只返回日/会话汇总，不提供精确事件视图；项目统计需要事件中有真实路径。 |
 | 压缩日志 | DSH 的 zstd 需要 Node 提供相关 API；不支持时跳过压缩文件并提示。 |
