@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readCollectionState, lockCollectionState } from './collection-state.mjs';
 import { fromStored } from './db-batch.mjs';
 import { readSnapshot, reconcileSnapshot, writeSnapshot } from './usage-store.mjs';
+import { deleteCoveredPiSummaries } from './pi-summary-store.mjs';
 
 const digest = rows => createHash('sha256').update(JSON.stringify(rows)).digest('hex');
 
@@ -55,17 +56,18 @@ export async function prepareCollectionDelta(db, scope, incoming) {
   } };
 }
 
-export async function applyCollectionDelta(db, scope, incoming, { pricingData = null } = {}) {
+export async function applyCollectionDelta(db, scope, incoming, { pricingData = null, coveredEventKeys = [] } = {}) {
   return db.transaction(async tx => {
     // Serialize readers/writers for this scope. Other storage primitives
     // invalidate the same row before writing, so a concurrent import cannot
     // leave a checkpoint describing an outdated database snapshot.
     await lockCollectionState(tx, scope);
+    const removed = await deleteCoveredPiSummaries(tx, coveredEventKeys.map(eventKey => ({ ...scope, eventKey })));
     const delta = await prepareCollectionDelta(tx, scope, incoming);
     if (!delta.unchanged) {
       delta.next = reconcileSnapshot(delta.previous, delta.incoming, { pricingData });
       await writeSnapshot(tx, delta.next, { previous: delta.previous, checkpoint: { scope, signature: delta.signature } });
     }
-    return delta;
+    return { ...delta, removed };
   });
 }

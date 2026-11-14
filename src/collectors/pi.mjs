@@ -10,7 +10,7 @@ import { localDateFromTimestamp, normalizeModelForGrouping } from './utils.mjs';
 
 export const CLIENT_KEY = 'pi';
 export const SOURCE_LABEL = 'Pi Agent';
-const CACHE_VERSION = 5;
+const CACHE_VERSION = 6;
 
 export function sessionRoots() {
   const sessionDir = expandPath(process.env.PI_CODING_AGENT_SESSION_DIR);
@@ -66,6 +66,20 @@ function tokensFromUsage(usage) {
 function recordedCost(usage) {
   const value = usage.cost?.total;
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function subagentResults(message) {
+  if (message?.role !== 'toolResult' || message.toolName !== 'subagent'
+      || !Array.isArray(message.details?.results) || !message.details.results.length) return;
+  // 只在缓存中保留子会话引用和用量，不保留工具输出或提示词。
+  const results = [];
+  for (const result of message.details.results) {
+    const sessionFile = text(result?.sessionFile);
+    if (!sessionFile || !result.usage || typeof result.usage !== 'object') return;
+    results.push({ sessionFile, tokens: tokensFromUsage(result.usage),
+      cost: typeof result.usage.cost === 'number' ? result.usage.cost : recordedCost(result.usage) });
+  }
+  return results;
 }
 
 /** Retains every billed branch, including entries no longer in active context. */
@@ -137,13 +151,16 @@ export async function parseSessionFile(filePath, { omp = false } = {}) {
       && ['openrouter', 'cline-pass'].includes(provider);
     const logCostBasis = cost == null ? null : reported ? 'recorded' : ambiguous ? 'legacy_unknown' : 'estimated';
     const entryId = text(row.id);
+    const children = !omp && subagentResults(message);
     events.push({
       eventKey: hash([header.sessionId, entryId || `line:${lineIndex}`]),
       // Forks preserve entry IDs, timestamps and usage. Compare all of them;
       // coincidentally equal token totals in unrelated sessions are not copies.
       fingerprint: entryId ? hash([entryId, row.type, time, rawModel, provider, tokens, cost]) : null,
       time, pricingTime: messageTime ?? time, model: normalizeModelForGrouping(rawModel), provider, tokens,
-      recordedCost: cost, logCostBasis
+      recordedCost: cost, logCostBasis,
+      ...(message?.role === 'assistant' ? { assistant: true } : {}),
+      ...(children ? { children } : {})
     });
   }
   return header ? { ...header, events } : null;
@@ -171,6 +188,42 @@ function addTokens(target, tokens) {
   for (const key of Object.keys(tokens)) target[key] = (target[key] || 0) + tokens[key];
 }
 
+function sameSubagentTokens(a, b) {
+  // 父会话汇总的 output 已包含推理 token。
+  return ['input', 'cacheRead', 'cacheWrite', 'unclassified'].every(key => (a[key] || 0) === (b[key] || 0))
+    && a.output + a.reasoning === b.output + b.reasoning;
+}
+
+function sameSubagentCost(a, b) {
+  return a == null || Math.abs(a - b) <= 1e-8;
+}
+
+function subagentSummaryCovered(record, filePath, canonicalPaths, collected, cutoff) {
+  if (!record.children || record.logCostBasis === 'recorded') return false;
+  const tokens = emptyTokens();
+  let cost = 0;
+  const matched = new Set([filePath]);
+  for (const child of record.children) {
+    // 只核对当前扫描中实际保留的子会话明细，不另外读取引用指向的文件。
+    const path = canonicalPaths.get(resolve(dirname(filePath), child.sessionFile));
+    const childEvents = collected.get(path);
+    if (!childEvents || matched.has(path)) return false;
+    matched.add(path);
+    const detailedTokens = emptyTokens();
+    let detailedCost = 0;
+    for (const event of childEvents) {
+      if (!event.assistant || event.time > record.time) continue;
+      if (event.time < cutoff) return false;
+      addTokens(detailedTokens, event.tokens);
+      detailedCost += event.recordedCost ?? 0;
+    }
+    if (!sameSubagentTokens(child.tokens, detailedTokens) || !sameSubagentCost(child.cost, detailedCost)) return false;
+    addTokens(tokens, detailedTokens);
+    cost += detailedCost;
+  }
+  return sameSubagentTokens(record.tokens, tokens) && sameSubagentCost(record.recordedCost, cost);
+}
+
 export function collect(pricingData = null) {
   return collectSessions(pricingData, { roots: sessionRoots(), client: CLIENT_KEY });
 }
@@ -178,6 +231,8 @@ export function collect(pricingData = null) {
 export async function collectSessions(pricingData, { roots, client, omp = false }) {
   const discovered = (await Promise.all(roots.map(findFiles))).flat();
   const canonical = await Promise.all(discovered.map(path => realpath(path).catch(() => path)));
+  const canonicalPaths = new Map(canonical.map((path, index) => [resolve(discovered[index]), path]));
+  for (const path of canonical) canonicalPaths.set(resolve(path), path);
   const sessions = new Map();
   for (const filePath of [...new Set(canonical)].sort()) {
     const parsed = await cachedParse(client, CACHE_VERSION, filePath, path => parseSessionFile(path, { omp }));
@@ -187,19 +242,30 @@ export async function collectSessions(pricingData, { roots, client, omp = false 
     sessions.set(filePath, { ...parsed, parentPath });
   }
 
-  const daily = new Map();
-  const workspaces = new Map();
-  const events = [];
+  const collected = new Map();
   const seen = new Set();
-  const cutoff = Date.now() - Number(process.env.TIME_USAGE_HISTORY_DAYS || Infinity) * 86400000;
   for (const [filePath, session] of sessions) {
     const inherited = new Set(ancestors(filePath, sessions).flatMap(parent =>
       parent.events.filter(event => session.createdAt !== null && event.time <= session.createdAt)
         .map(event => event.fingerprint).filter(Boolean)));
-    for (const record of session.events) {
-      if (record.fingerprint && inherited.has(record.fingerprint)) continue;
-      if (seen.has(record.eventKey)) continue;
+    collected.set(filePath, session.events.filter(record => {
+      if (inherited.has(record.fingerprint) || seen.has(record.eventKey)) return false;
       seen.add(record.eventKey);
+      return true;
+    }));
+  }
+
+  const daily = new Map();
+  const workspaces = new Map();
+  const events = [];
+  const coveredEventKeys = [];
+  const cutoff = Date.now() - Number(process.env.TIME_USAGE_HISTORY_DAYS || Infinity) * 86400000;
+  for (const [filePath, session] of sessions) {
+    for (const record of collected.get(filePath)) {
+      if (subagentSummaryCovered(record, filePath, canonicalPaths, collected, cutoff)) {
+        coveredEventKeys.push(record.eventKey);
+        continue;
+      }
       const { time, pricingTime, model, provider, tokens, eventKey } = record;
       const date = localDateFromTimestamp(time);
       const workspace = session.workspace || session.sessionId;
@@ -232,6 +298,7 @@ export async function collectSessions(pricingData, { roots, client, omp = false 
       });
     }
   }
+  if (coveredEventKeys.length) console.log(`[Pi Agent] 已跳过由子会话明细覆盖的用量汇总，记录数: ${coveredEventKeys.length}`);
   await flushCache(client);
   const byDate = new Map();
   for (const row of daily.values()) {
@@ -242,6 +309,6 @@ export async function collectSessions(pricingData, { roots, client, omp = false 
     graphJson: { contributions: [...byDate].sort(([a], [b]) => a.localeCompare(b))
       .map(([date, clients]) => ({ date, clients })) },
     modelsJson: { entries: [...workspaces.values()] },
-    eventsJson: { events }
+    eventsJson: { events, ...(coveredEventKeys.length ? { coveredEventKeys } : {}) }
   };
 }

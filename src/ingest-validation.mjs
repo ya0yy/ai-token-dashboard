@@ -79,5 +79,19 @@ export function validateIngest(payload, { maxRows = 100_000 } = {}) {
       if (!scopes.has(JSON.stringify([row.device, row.source]))) throw new Error('Row outside replacement scope');
     }
   }
+  if (payload.removeTime !== undefined) {
+    if (mode !== 'incremental' || !Array.isArray(payload.removeTime) || payload.removeTime.length > maxRows) {
+      throw new Error('无效的用量事件删除列表');
+    }
+    const key = row => JSON.stringify([row.device, row.source, row.eventKey]);
+    const upserts = new Set(result.time.map(key));
+    result.removeTime = payload.removeTime.map(row => {
+      if (!row || row.source !== 'Pi Agent') throw new Error('只允许移除已核实的 Pi Agent 子代理汇总');
+      text(row.device, 'device', { max: 255 });
+      text(row.eventKey, 'eventKey', { max: 64 });
+      if (!/^[a-f0-9]{64}$/.test(row.eventKey) || upserts.has(key(row))) throw new Error('无效的待删除事件键');
+      return { device: row.device, source: row.source, eventKey: row.eventKey };
+    });
+  }
   return result;
 }

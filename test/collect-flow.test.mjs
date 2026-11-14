@@ -3,10 +3,76 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
+import { startServer } from './helpers/server.mjs';
+import { openDb } from '../src/db.mjs';
+import { readSnapshot } from '../src/usage-store.mjs';
+import { syncDatabase } from '../src/sync.mjs';
+
+const runFile = promisify(execFile);
 
 const collector = resolve('src/collect.mjs');
+
+test('Pi 补采子会话后，本机和 Hub 只移除已核实的父会话汇总', { timeout: 20_000 }, async t => {
+  const hub = await startServer({ INGEST_TOKEN: 'test-token' });
+  t.after(() => hub.close());
+  const root = join(hub.root, 'pi');
+  mkdirSync(root);
+  const scope = { device: 'pi-test', source: 'Pi Agent' };
+  const dbPath = join(hub.root, 'collector.sqlite');
+  const local = await openDb(dbPath);
+  const remote = await openDb(join(hub.root, 'usage.sqlite'), { readOnly: true });
+  t.after(async () => { await local.close(); await remote.close(); });
+  const run = () => runFile(process.execPath, [collector, '--db', dbPath, '--device', scope.device, '--source', scope.source], {
+    cwd: hub.root, timeout: 5000, env: { ...process.env, PI_CODING_AGENT_SESSION_DIR: root, DISPLAY_TZ: 'Asia/Shanghai' }
+  });
+  const sync = options => syncDatabase({ db: local, ...scope, url: hub.base + '/api/ingest',
+    token: 'test-token', hubPricing: true, ...options });
+  const save = (file, id, ...rows) => writeFileSync(join(root, file), [
+    { type: 'session', id, cwd: '/work/pi' }, ...rows
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const entry = (id, message, timestamp = '2026-10-29T03:00:00Z') => ({ type: 'message', id, timestamp, message });
+  const usage = { input: 100, output: 20, cost: { total: 0 } };
+  const separateUsage = { input: 50, cost: { total: 2 } };
+  save('parent.jsonl', 'parent', entry('summary', { role: 'toolResult', toolName: 'subagent', usage,
+    details: { results: [{ sessionFile: 'child.jsonl', usage }] } }),
+    entry('separate-summary', { role: 'toolResult', toolName: 'subagent', model: 'old-model', usage: separateUsage,
+      details: { results: [{ sessionFile: 'separate.jsonl', usage: separateUsage }] } }),
+    entry('other', { role: 'toolResult', toolName: 'another-tool', usage: { input: 7 } }));
+  await run();
+  await sync();
+  // 第二个同步目标的进度停在父会话已经上报的版本。
+  await sync({ url: hub.base + '/api/ingest?target=offline' });
+  assert.equal((await readSnapshot(remote)).time.length, 3);
+
+  save('child.jsonl', 'child', entry('child-call', { role: 'assistant', model: 'child-model', usage }, '2026-10-29T02:59:59Z'));
+  save('separate.jsonl', 'separate', entry('other-child-call', { role: 'assistant', model: 'child-model',
+    usage: { ...separateUsage, cost: { total: 2, totalFromProvider: true } } }, '2026-10-29T02:59:59Z'));
+  await run();
+  const assertCorrected = async db => {
+    const snapshot = await readSnapshot(db);
+    assert.deepEqual(snapshot.time.map(row => row.totalTokens).sort((a, b) => a - b), [7, 50, 120]);
+    assert.deepEqual(snapshot.daily.map(row => [row.model, row.totalTokens, row.costUSD]).sort(), [['child-model', 170, 2], ['unknown', 7, 0]]);
+  };
+  await assertCorrected(local);
+  assert.equal((await readSnapshot(local)).sessions.find(row => row.sessionId.endsWith(':unknown')).totalTokens, 7);
+  assert.ok(!(await readSnapshot(local)).sessions.some(row => row.sessionId.endsWith(':old-model')));
+  await assert.rejects(sync({ fetcher: async () => new Response(null, { status: 404 }) }), /先升级 Hub/);
+  assert.equal((await readSnapshot(remote)).time.length, 3);
+  await assert.rejects(sync({ fetcher: async (...args) => {
+    const response = await fetch(...args);
+    if (args[1].method === 'PATCH') { await response.json(); throw new Error('删除响应丢失'); }
+    return response;
+  } }), /删除响应丢失/);
+  await assertCorrected(remote);
+  await sync();
+  await assertCorrected(remote);
+  assert.equal((await sync()).requests, 0);
+  await sync({ url: hub.base + '/api/ingest?target=offline', resync: true });
+  await assertCorrected(remote);
+});
 
 test('CLI collection, late usage, full preview, backup and replacement preserve amounts and scope', () => {
   const root = mkdtempSync(join(tmpdir(), 'collect-flow-'));

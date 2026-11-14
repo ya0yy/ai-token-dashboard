@@ -40,6 +40,20 @@ async function advance(db, scope) {
 // Keep only the latest pending value per row; intermediate versions need not
 // be transmitted because the existing ingest contract is an idempotent upsert.
 export async function recordUsageChanges(db, kind, rows, definition) {
+  return recordChanges(db, kind, rows, row => {
+    const payload = Object.fromEntries(definition.fields.map(([, name, fallback]) => [name, row[name] ?? fallback]));
+    const identity = definition.keys.map(column => payload[definition.fields.find(([name]) => name === column)[1]]);
+    return [digest([kind, ...identity]), JSON.stringify(payload)];
+  });
+}
+
+export async function recordTimeDeletions(db, rows) {
+  return recordChanges(db, 'time-delete', rows, ({ device, source, eventKey }) => [
+    digest(['time', device, source, eventKey]), JSON.stringify({ device, source, eventKey })
+  ]);
+}
+
+async function recordChanges(db, kind, rows, entry) {
   const groups = new Map();
   for (const row of rows) {
     const key = collectionScopeKey(row);
@@ -48,11 +62,7 @@ export async function recordUsageChanges(db, kind, rows, definition) {
   }
   for (const [, records] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
     const { key, revision } = await advance(db, records[0]);
-    const entries = new Map(records.map(row => {
-      const payload = Object.fromEntries(definition.fields.map(([, name, fallback]) => [name, row[name] ?? fallback]));
-      const identity = definition.keys.map(column => payload[definition.fields.find(([name]) => name === column)[1]]);
-      return [digest([kind, ...identity]), JSON.stringify(payload)];
-    }));
+    const entries = new Map(records.map(entry));
     for (let offset = 0, items = [...entries]; offset < items.length; offset += 200) {
       const part = items.slice(offset, offset + 200);
       await db.run(`INSERT INTO sync_changes (scope_key, row_key, revision, kind, payload_json)

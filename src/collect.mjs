@@ -78,9 +78,11 @@ async function collectLocal() {
 
     const scope = { device, source: label };
     const incoming = { daily: dailyRows, time: timeRows, sessions: sessionRows };
-    const delta = !args.full && !preview ? await applyCollectionDelta(db, scope, incoming, { pricingData }) : null;
+    const coveredEventKeys = eventsJson?.coveredEventKeys ?? [];
+    const delta = !args.full && !preview ? await applyCollectionDelta(db, scope, incoming, { pricingData, coveredEventKeys }) : null;
+    const removed = delta?.removed ? `，已移除重复子代理汇总: ${delta.removed}` : '';
     if (delta?.unchanged) {
-      const message = `daily=${dailyRows.length}, time=${timeRows.length}, workspace_model=${sessionRows.length}, unchanged`;
+      const message = `daily=${dailyRows.length}, time=${timeRows.length}, workspace_model=${sessionRows.length}, unchanged${removed}`;
       collection.scopes.push(scope);
       await recordRun(db, { ...scope, status: dailyRows.length || sessionRows.length ? 'ok' : 'empty',
         message, collectedAt: collection.collectedAt, command: `js-collector:${module}` });
@@ -102,7 +104,7 @@ async function collectLocal() {
     if (!delta) await writeSnapshot(db, next, { previous, full: Boolean(args.full), scopes: [scope],
       checkpoint: { scope, signature: collectionSignature(incoming) } });
     collection.scopes.push(scope);
-    const message = `daily=${dailyRows.length}, time=${timeRows.length}, workspace_model=${sessionRows.length}${args.full ? ', full' : delta?.dates ? `, reconciled_dates=${delta.dates.length}` : ''}`;
+    const message = `daily=${dailyRows.length}, time=${timeRows.length}, workspace_model=${sessionRows.length}${args.full ? ', full' : delta?.dates ? `, reconciled_dates=${delta.dates.length}` : ''}${removed}`;
     const run = {
       device,
       source: label,

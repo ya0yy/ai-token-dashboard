@@ -39,12 +39,16 @@ async function capture(db, scope, after, full, resync) {
     const replacement = full || Number(state.reset_revision) > (after ?? 0);
     if (after != null && after > revision && !full) throw new Error('Sync progress is ahead of source history; restore the complete database or use --full --apply');
     if (!replacement && !resync && after === revision) return { revision, snapshot: emptySnapshot(), mode: 'incremental' };
-    if (after == null || replacement || resync) return { revision, mode: replacement ? 'full' : 'incremental',
-      snapshot: await readSnapshot(tx, scope.device, scope.source) };
-    const snapshot = emptySnapshot();
-    const changes = await tx.all('SELECT kind, payload_json FROM sync_changes WHERE scope_key = ? AND revision > ? AND revision <= ? ORDER BY revision, row_key',
-      [key, after, revision]);
-    for (const row of changes) snapshot[row.kind].push(JSON.parse(row.payload_json));
+    if (replacement) return { revision, mode: 'full', snapshot: await readSnapshot(tx, scope.device, scope.source) };
+    const baseline = after == null || resync;
+    const snapshot = baseline ? await readSnapshot(tx, scope.device, scope.source) : emptySnapshot();
+    const changes = await tx.all(`SELECT kind, payload_json FROM sync_changes WHERE scope_key = ? AND revision > ? AND revision <= ?
+      ${baseline ? "AND kind = 'time-delete'" : ''} ORDER BY revision, row_key`,
+      [key, after ?? 0, revision]);
+    for (const row of changes) {
+      if (row.kind === 'time-delete') (snapshot.removeTime ??= []).push(JSON.parse(row.payload_json));
+      else if (!baseline) snapshot[row.kind].push(JSON.parse(row.payload_json));
+    }
     return { revision, snapshot, mode: 'incremental' };
   });
 }
@@ -81,18 +85,20 @@ export async function syncDatabase({ db, url, token, device, source, full = fals
     try {
       // 新协议补传之前跳过的日汇总，首次使用时重发本机基线。
       const plan = await capture(db, scope, after, full, resync || upgrade);
-      const send = async payload => {
+      const send = async (payload, correction = false) => {
         if (hubPricing) payload = { mode: payload.mode, scopes: payload.scopes, pricing: 'hub',
-          daily: payload.daily.map(usageOnly), time: payload.time.map(usageOnly) };
+          daily: payload.daily.map(usageOnly), time: payload.time.map(usageOnly), removeTime: payload.removeTime };
         const body = JSON.stringify(payload);
         if (Buffer.byteLength(body) > 48 * 1024 * 1024) throw new Error('Replacement exceeds 48 MiB; rebuild one source at a time with --source');
         await renew(db, targetKey, owner);
         const response = await fetcher(target.href, {
-          // PUT 让旧 Hub 明确拒绝新版用量，避免它按零金额接收入库。
-          method: hubPricing ? 'PUT' : 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+          // 旧 Hub 会拒绝 PATCH，采集器因此保留待发送的删除记录。
+          method: correction ? 'PATCH' : hubPricing ? 'PUT' : 'POST',
+          headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
           body, signal: AbortSignal.timeout(60_000)
         });
         if (!response.ok) {
+          if (correction && [404, 405].includes(response.status)) throw new Error('上报失败：请先升级 Hub 以同步 Pi Agent 重复汇总删除。');
           if (hubPricing && [404, 405].includes(response.status)) throw new Error('上报失败：请先升级 Hub 以支持服务端入库计价。');
           const error = await response.json().catch(() => null);
           if (hubPricing && error?.error === 'Hub 计价上报仅接受调用明细') {
@@ -105,10 +111,14 @@ export async function syncDatabase({ db, url, token, device, source, full = fals
       };
       if (plan.mode === 'full') await send({ mode: 'full', scopes: [scope], ...plan.snapshot });
       else {
-        const { daily, time, sessions } = plan.snapshot;
-        const count = Math.max(daily.length, time.length, hubPricing ? 0 : sessions.length);
-        for (let i = 0; i < count; i += 1000) await send({ mode: 'incremental',
-          ...Object.fromEntries(Object.entries(plan.snapshot).map(([kind, rows]) => [kind, rows.slice(i, i + 1000)])) });
+        const { daily, time, sessions, removeTime = [] } = plan.snapshot;
+        const correction = removeTime.length > 0;
+        const count = Math.max(daily.length, time.length, hubPricing ? 0 : sessions.length, Number(correction));
+        for (let i = 0; i < count; i += 1000) {
+          // 明细分批时先同步前面的批次，最后一次把剩余明细与删除放在同一事务。
+          await send({ mode: 'incremental', daily: daily.slice(i, i + 1000), time: time.slice(i, i + 1000),
+            sessions: sessions.slice(i, i + 1000), ...(correction && i + 1000 >= count ? { removeTime } : {}) }, correction);
+        }
       }
       if (after !== plan.revision || upgrade || plan.mode === 'full') await acknowledge(db, targetKey, scopeKey, owner, plan.revision, protocol);
       for (const kind of hubPricing ? ['daily', 'time'] : Object.keys(result.rows)) result.rows[kind] += plan.snapshot[kind].length;

@@ -155,6 +155,13 @@ an earlier explicit local replacement to any target still behind that reset.
 Replacement payloads remain atomic per source and limited to 48 MiB. Keep
 backups on both sides before replacing remote history.
 
+When all Pi Agent child calls account for a parent tool-result summary, the
+collector removes the stored summary by device, source and event key. It adjusts
+the affected totals and saves the deletion in the same transaction. Sync sends
+these corrections with `PATCH /api/ingest`, after any earlier batches of child
+calls have reached the hub. A failed request remains pending for that target.
+Upgrade the hub and collector to enable this correction.
+
 If a hub database is reset behind the same URL, add `--resync` to the normal
 `collect --push <url>` command to resend the stored baseline. `--resync` alone
 does not request deletion. It must be used with `--push`; use `--full --apply`

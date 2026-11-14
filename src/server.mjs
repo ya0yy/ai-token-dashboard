@@ -29,6 +29,7 @@ import { normalizeModelForGrouping } from './collectors/utils.mjs';
 import { repriceUsage } from './reprice-store.mjs';
 import { preserveHubRepricing, reconcileHubRepricing } from './hub-repriced-ingest.mjs';
 import { prepareHubPricing, writeHubPricedDays } from './hub-ingest-pricing.mjs';
+import { deleteCoveredPiSummaries } from './pi-summary-store.mjs';
 
 // Live subscription-window quota is the one feature that makes outbound calls
 // (to the vendors' usage endpoints, using the OAuth token the CLIs stored
@@ -189,7 +190,7 @@ async function handleApi(req, url, res) {
     await handleQuota(res);
     return;
   }
-  if (url.pathname === '/api/ingest' && ['POST', 'PUT'].includes(req.method)) {
+  if (url.pathname === '/api/ingest' && ['POST', 'PUT', 'PATCH'].includes(req.method)) {
     await handleIngest(req, res);
     return;
   }
@@ -350,6 +351,7 @@ async function handleIngest(req, res) {
   try {
     const payload = validateIngest(await readJson(req));
     if (req.method === 'PUT' && payload.pricing !== 'hub') throw new Error('新版用量上报缺少 Hub 计价标记');
+    if (payload.removeTime !== undefined && req.method !== 'PATCH') throw new Error('用量事件删除需要使用 PATCH');
     const dailyRows = Array.isArray(payload.daily) ? payload.daily : [];
     const timeRows = Array.isArray(payload.time) ? payload.time : [];
     const sessionRows = Array.isArray(payload.sessions) ? payload.sessions : [];
@@ -359,7 +361,7 @@ async function handleIngest(req, res) {
     const pricing = payload.pricing === 'hub' ? await currentPricingSnapshot() : null;
 
     // 全量 push 携带设备完整时间窗,按 (device, source) 整体替换;
-    // 增量 push 只含新事件,只做 upsert,绝不删表。
+    // 增量修正按事件键移除经过采集端核验的汇总。
     const timePairs = new Map();
     if (fullRebuild) {
       for (const row of payload.scopes) {
@@ -367,10 +369,12 @@ async function handleIngest(req, res) {
       }
     }
 
-    const writtenDaily = await db.transaction(async (tx) => {
-      const scopes = [...new Map([...payload.scopes, ...dailyRows, ...timeRows, ...sessionRows]
+    const removeTime = payload.removeTime ?? [];
+    const { writtenDaily, removed } = await db.transaction(async (tx) => {
+      const scopes = [...new Map([...payload.scopes, ...dailyRows, ...timeRows, ...sessionRows, ...removeTime]
         .map(({ device, source }) => [JSON.stringify([device, source]), { device, source }])).values()];
       await invalidateCollectionState(tx, scopes);
+      const removed = await deleteCoveredPiSummaries(tx, removeTime);
       const priced = pricing ? await prepareHubPricing(tx, timeRows, pricing, dailyRows) : null;
       const reconciled = priced ? null : await preserveHubRepricing(tx, scopes, dailyRows, timeRows);
       for (const row of timePairs.values()) {
@@ -390,7 +394,7 @@ async function handleIngest(req, res) {
       }
       await batchUpsertSession(tx, sessionRows);
       for (const row of runRows) await recordRun(tx, row);
-      return dayCount;
+      return { writtenDaily: dayCount, removed };
     });
 
     // The hub stays up across many ingests; keep collection_runs bounded.
@@ -399,6 +403,7 @@ async function handleIngest(req, res) {
     if (pricing) {
       console.log(`[用量入库] Hub 已计价，调用数: ${timeRows.length}，日汇总数: ${writtenDaily}，价格版本: ${pricing.version}`);
     }
+    if (removed) console.log(`[用量入库] 已移除重复子代理汇总，记录数: ${removed}`);
     sendJson(res, { ok: true, mode: fullRebuild ? 'full' : 'incremental', daily: writtenDaily, time: timeRows.length, sessions: sessionRows.length, runs: runRows.length });
   } catch (error) {
     console.warn('[用量入库] 上报失败，请检查上报数据、价格规则和数据库。', error);

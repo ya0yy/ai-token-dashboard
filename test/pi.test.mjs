@@ -182,6 +182,47 @@ test('legacy routing, malformed lines, pending messages, zero tokens and explici
   });
 });
 
+test('Pi 跳过已由子会话逐笔覆盖的工作流用量汇总', async () => {
+  const childUsage = { ...usage, reasoning: 0, cost: 0.25 };
+  const summary = reply('tool', { timestamp: T + 1000, message: {
+    role: 'toolResult', toolName: 'subagent',
+    usage: { input: 200, output: 80, cacheRead: 600, cacheWrite: 40, totalTokens: 920, cost: { total: 0.5 } },
+    details: { mode: 'workflow', results: [
+      { sessionFile: 'workers/a.jsonl', usage: childUsage },
+      { sessionFile: 'workers/b.jsonl', usage: childUsage }
+    ] }
+  } });
+  await withSessions({
+    'parent.jsonl': [header('parent'), summary],
+    'workers/a.jsonl': [header('child-a'), reply('a'), reply('continued', { timestamp: T + 2000 })],
+    'workers/b.jsonl': [header('child-b'), reply('b', { message: { ...reply('b').message, model: 'model-two' } })]
+  }, async () => {
+    const { eventsJson, graphJson, modelsJson } = await collect();
+    assert.deepEqual(eventsJson.events.map(event => event.sessionId), ['child-a', 'child-a', 'child-b']);
+    assert.deepEqual(graphJson.contributions.flatMap(day => day.clients).map(row => row.modelId), ['model-one', 'model-two']);
+    assert.deepEqual(modelsJson.entries.map(row => row.model), ['model-one', 'model-two']);
+  });
+});
+
+test('Pi 子会话缺失或用量未对齐时保留父会话汇总，明细补齐后跳过', async () => {
+  const summary = reply('tool', { timestamp: T + 1000, message: {
+    role: 'toolResult', toolName: 'subagent', usage,
+    details: { mode: 'single', results: [{ sessionFile: 'child.jsonl', usage }] }
+  } });
+  await withSessions({ 'parent.jsonl': [header('parent'), summary] }, async root => {
+    const childFile = join(root, 'child.jsonl');
+    const parentEvents = async () => (await collect()).eventsJson.events.filter(event => event.sessionId === 'parent');
+    assert.equal((await parentEvents()).length, 1);
+
+    const partial = reply('a', { message: { ...reply('a').message, usage: { input: 5 } } });
+    writeFileSync(childFile, [header('child'), partial].map(row => JSON.stringify(row)).join('\n'));
+    assert.equal((await parentEvents()).length, 1);
+
+    writeFileSync(childFile, [header('child'), reply('a')].map(row => JSON.stringify(row)).join('\n'));
+    assert.equal((await parentEvents()).length, 0);
+  });
+});
+
 test('timestamp forms agree, reasoning is clamped, and local midnight changes the date', async () => {
   const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
   const ms = midnight.getTime();
