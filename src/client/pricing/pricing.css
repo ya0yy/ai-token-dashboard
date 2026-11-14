@@ -78,7 +78,7 @@
   color-scheme: dark;
 }
 
-.pricing-page :is(a, button, input, [tabindex]):focus-visible {
+.pricing-page :is(a, button, input, select, [tabindex]):focus-visible {
   outline: 2px solid var(--c-indigo);
   outline-offset: 2px;
 }
@@ -215,15 +215,21 @@
   color: var(--bad);
 }
 
-.reprice-dates {
+.reprice-filters {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
   gap: 12px;
 }
 
-.reprice-dates label {
+.reprice-filters > :is(label, .reprice-source) {
   flex: 0 1 180px;
+}
+
+.reprice-source {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
 }
 
 .reprice-result {

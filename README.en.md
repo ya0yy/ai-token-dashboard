@@ -287,9 +287,7 @@ To refresh bundled defaults on the hub, run:
 npm run pricing:update
 ```
 
-On the hub, open the pricing page, select a date range under historical repricing, and preview the cost difference before applying. The hub backs up the affected data and updates the uploaded estimates. Replaying the same usage keeps the hub's recalculated costs.
-
-To recover historical Pi Agent zero amounts that you have verified were local estimates, select the dates, enter the exact model ID, and enable the legacy Pi zero-cost option before previewing. If the provider was missing, the preview uses the model default.
+On the hub, open the pricing page, select a date range under historical repricing, and optionally filter by agent tool and model. Preview the cost difference before applying. The hub backs up the affected data and updates the uploaded estimates. Replaying the same usage keeps the hub's recalculated costs.
 
 To preview from the source database using the CLI:
 

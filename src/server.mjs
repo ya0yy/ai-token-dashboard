@@ -477,7 +477,8 @@ async function handlePricing(req, res) {
     return;
   }
   const { version, policy, ...catalog } = await currentPricingSnapshot();
-  sendJson(res, { version, policy, models: defaultPriceTable(catalog) });
+  const sources = await db.all(`SELECT DISTINCT ${exactColumn(db, 'source')} AS source FROM daily_usage ORDER BY source`);
+  sendJson(res, { version, policy, models: defaultPriceTable(catalog), sources: sources.map(row => row.source) });
 }
 
 async function handleReprice(req, res) {
@@ -491,13 +492,19 @@ async function handleReprice(req, res) {
   }
   let options;
   try {
-    const { start, end, previewId, model, recoverLegacyPiZero = false, fallbackProvider } = await readJson(req);
+    const { start, end, previewId, model, source, recoverLegacyPiZero = false, fallbackProvider } = await readJson(req);
     if (!validDate(start) || !validDate(end) || start > end) throw new Error('请选择有效的开始和结束日期');
     if (model != null && (typeof model !== 'string' || !model.trim() || model.length > 255 || model.includes('\0'))) {
       throw new Error('请输入有效的完整模型 ID');
     }
+    if (source !== undefined && (typeof source !== 'string' || !source.trim() || source.length > 255 || source.includes('\0'))) {
+      throw new Error('请选择有效的 Agent 工具');
+    }
     if (typeof recoverLegacyPiZero !== 'boolean' || recoverLegacyPiZero && !model?.trim()) {
       throw new Error('补算旧版 Pi Agent 零金额时，请填写完整模型 ID');
+    }
+    if (recoverLegacyPiZero && source !== undefined && source.trim() !== 'Pi Agent') {
+      throw new Error('旧版零金额补算仅支持 Pi Agent');
     }
     if (fallbackProvider !== undefined && (!recoverLegacyPiZero || typeof fallbackProvider !== 'string'
       || !fallbackProvider.trim() || fallbackProvider.length > 255 || fallbackProvider.includes('\0'))) {
@@ -507,7 +514,7 @@ async function handleReprice(req, res) {
       throw new Error('请先预览这段日期的费用差额');
     }
     options = { start, end, model: model?.trim(), recoverLegacyPiZero, fallbackProvider: fallbackProvider?.trim(),
-      source: recoverLegacyPiZero ? 'Pi Agent' : undefined,
+      source: recoverLegacyPiZero ? 'Pi Agent' : source?.trim(),
       previewId, apply: previewId !== undefined, protect: true };
   } catch (error) {
     sendJson(res, { error: error.message }, 400);
@@ -522,7 +529,7 @@ async function handleReprice(req, res) {
       return;
     }
     const { scopes, backupPath, ...result } = await repriceUsage(db, pricing, options);
-    console.log(`[费用重算] ${options.apply ? '执行' : '预览'}，开始: ${options.start}，结束: ${options.end}，模型: ${options.model || '全部'}，补算旧 Pi 零金额: ${options.recoverLegacyPiZero}，参考 Provider: ${options.fallbackProvider || '默认'}，范围: ${scopes.length}，调用: ${result.counts.time}，差额 USD: ${result.difference}，价格版本: ${pricing.version}，耗时毫秒: ${Math.round(performance.now() - startedAt)}`);
+    console.log(`[费用重算] ${options.apply ? '执行' : '预览'}，开始: ${options.start}，结束: ${options.end}，Agent 工具: ${options.source || '全部'}，模型: ${options.model || '全部'}，补算旧 Pi 零金额: ${options.recoverLegacyPiZero}，参考 Provider: ${options.fallbackProvider || '默认'}，范围: ${scopes.length}，调用: ${result.counts.time}，差额 USD: ${result.difference}，价格版本: ${pricing.version}，耗时毫秒: ${Math.round(performance.now() - startedAt)}`);
     if (backupPath) console.log(`[费用重算] 服务端备份: ${backupPath}`);
     sendJson(res, { ...result, backupFile: backupPath ? basename(backupPath) : null });
   } catch (error) {

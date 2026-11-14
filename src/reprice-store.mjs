@@ -148,7 +148,7 @@ export async function repriceUsage(db, pricing, options) {
       }
 
       const models = options.model ? pricingRuleModelIds(options.model) : null;
-      const id = digest([pricing.version, options.start, options.end, models, options.recoverLegacyPiZero, options.fallbackProvider,
+      const id = digest([pricing.version, options.start, options.end, models, options.source, options.recoverLegacyPiZero, options.fallbackProvider,
         skipped, costBefore, costAfter, signatures.digest('hex')]);
       if (previewId && id !== previewId) {
         throw Object.assign(new Error('价格或用量已变化，请重新预览后再执行'), { status: 409 });

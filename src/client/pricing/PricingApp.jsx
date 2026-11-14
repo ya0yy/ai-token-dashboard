@@ -365,7 +365,7 @@ export function PricingApp() {
         onClick={() => setAttempt(value => value + 1)}>重试</button></p>}
       {!data && !error && <p role="status">正在加载模型价格…</p>}
       {data && <PricingEditor data={data} onSaved={setData} />}
-      {data && <RepricePanel key={data.version} rules={data.policy.rules} />}
+      {data && <RepricePanel key={data.version} sources={data.sources ?? []} />}
     </main>
   );
 }

@@ -13,12 +13,11 @@ const skipReasons = [
   ['noEligibleEvents', '无可更新的调用']
 ];
 
-export function RepricePanel({ rules }) {
+export function RepricePanel({ sources }) {
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
   const [model, setModel] = useState('');
-  const [recoverLegacyPiZero, setRecoverLegacyPiZero] = useState(false);
-  const [fallbackProvider, setFallbackProvider] = useState('');
+  const [source, setSource] = useState('');
   const [result, setResult] = useState(null);
   const [pending, setPending] = useState('');
   const [error, setError] = useState('');
@@ -37,8 +36,7 @@ export function RepricePanel({ rules }) {
       const response = await fetch('/api/pricing/reprice', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ start, end, model: model.trim() || undefined, recoverLegacyPiZero,
-          fallbackProvider: recoverLegacyPiZero ? fallbackProvider || undefined : undefined, previewId }),
+        body: JSON.stringify({ start, end, model: model.trim() || undefined, source: source || undefined, previewId }),
         signal: AbortSignal.timeout(60_000)
       });
       const data = await response.json().catch(() => null);
@@ -53,13 +51,12 @@ export function RepricePanel({ rules }) {
   }
 
   const skipped = result && skipReasons.filter(([key]) => result.skipped[key] > 0);
-  const providers = [...new Set(rules.filter(rule => rule.enabled).map(rule => rule.provider))].sort();
   return (
     <section id="historical-reprice" className="pricing-panel" aria-labelledby="reprice-title">
       <h2 id="reprice-title">历史费用重算</h2>
       <p>按看板日期选择范围，使用已保存的价格规则。执行前会在服务端备份。</p>
       <form onSubmit={event => { event.preventDefault(); submit(); }}>
-        <div className="reprice-dates">
+        <div className="reprice-filters">
           <label>开始日期
             <input type="date" required value={start} max={end || undefined} disabled={!!pending}
               onChange={event => updateFilter(setStart, event.target.value)} />
@@ -69,33 +66,21 @@ export function RepricePanel({ rules }) {
               onChange={event => updateFilter(setEnd, event.target.value)} />
           </label>
           <label>模型 ID
-            <input type="text" value={model} maxLength={255} required={recoverLegacyPiZero} disabled={!!pending}
-              placeholder={recoverLegacyPiZero ? '输入完整模型 ID' : '留空为全部模型'}
+            <input type="text" value={model} maxLength={255} disabled={!!pending}
+              placeholder="留空为全部模型"
               onChange={event => updateFilter(setModel, event.target.value)} />
           </label>
-          <button className="btn" disabled={!!pending || recoverLegacyPiZero && !model.trim()}>
+          <div className="reprice-source">
+            <label htmlFor="reprice-source">Agent 工具</label>
+            <select id="reprice-source" value={source} disabled={!!pending} onChange={event => updateFilter(setSource, event.target.value)}>
+              <option value="">全部工具</option>
+              {sources.map(tool => <option key={tool} value={tool}>{tool}</option>)}
+            </select>
+          </div>
+          <button className="btn" disabled={!!pending}>
             {pending === 'preview' ? '正在预览…' : '预览差额'}
           </button>
         </div>
-        <label className="pricing-checkbox">
-          <input type="checkbox" checked={recoverLegacyPiZero} disabled={!!pending}
-            onChange={event => updateFilter(setRecoverLegacyPiZero, event.target.checked)} />
-          仅补算旧版 Pi Agent 的零金额
-        </label>
-        {recoverLegacyPiZero && (
-          <>
-            <p className="muted">旧日志未区分本地估算和实际零元账单。核实为本地估算后再启用。</p>
-            {providers.length > 0 && (
-              <label>缺少 Provider 时使用的参考价
-                <select value={fallbackProvider} disabled={!!pending}
-                  onChange={event => updateFilter(setFallbackProvider, event.target.value)}>
-                  <option value="">模型默认价</option>
-                  {providers.map(provider => <option key={provider} value={provider}>{provider}</option>)}
-                </select>
-              </label>
-            )}
-          </>
-        )}
       </form>
       {error && <p className="pricing-error" role="alert">{error}</p>}
       {pending === 'apply' && <p role="status">正在备份并重算费用…</p>}

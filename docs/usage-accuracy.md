@@ -204,14 +204,15 @@ a transactional migration marker; it does not recalculate historical fees.
   them. Empty full scopes deliberately clear all three usage tables. Invalid
   dates, negative/nonfinite costs, and negative/fractional tokens are rejected
   before any write.
-- `GET /api/pricing` returns the model defaults, policy and version.
+- `GET /api/pricing` returns the model defaults, policy, version and available agent tools in `sources`.
   `PUT /api/pricing` saves the policy with the dashboard credential.
   `POST /api/pricing/reprice` uses the dashboard credential and previews the
-  inclusive `start` and `end` dates. Optional `model` selects a model ID.
+  inclusive `start` and `end` dates. Optional `model` selects a model ID and
+  optional `source` selects an agent tool from `sources`.
   `deepseek/deepseek-v4.1-flash-1017` and `deepseek-v4.1-flash-1017` select the same usage.
-  `recoverLegacyPiZero: true` requires a model ID and limits the operation to
-  eligible Pi Agent zero amounts. Submit the same filters with the returned
-  `previewId` to apply the changes.
+  Submit the same filters with the returned `previewId` to apply the changes.
+  Older API clients can still send `recoverLegacyPiZero: true` with a model ID
+  to limit the operation to eligible Pi Agent zero amounts.
   `GET /api/pricing/snapshot` uses the ingest credential and returns the
   versioned policy and catalog used by collectors. Clients that can apply
   per-rule schedules request `?schedules=extended&ruleSchedules=custom`.

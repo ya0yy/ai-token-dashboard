@@ -129,30 +129,38 @@ try {
   await chartPage.locator('canvas').first().waitFor();
   await chartPage.close();
 
-  const legacy = usage({ source: 'Pi Agent', usageDate: '2026-10-27', model: 'deepseek-v4.1-flash-1017',
-    costBasis: 'recorded', costUSD: 0 });
-  assert.equal((await app.ingest({ daily: [legacy], time: [event({ ...legacy, eventTime: '2026-10-27T12:00:00Z' })] })).status, 200);
+  const pi = usage({ source: 'Pi Agent', usageDate: '2026-10-27', model: 'deepseek-v4.1-flash-1017',
+    costBasis: 'estimated', costUSD: 0 });
+  const claude = { ...pi, source: 'Claude Code' };
+  const pricingTime = '2026-10-27T12:00:00Z';
+  assert.equal((await app.ingest({ daily: [pi, claude], time: [event({ ...pi, eventTime: pricingTime }),
+    event({ ...claude, eventTime: pricingTime, pricingTime })] })).status, 200);
   const saved = await fetch(app.base + '/api/pricing', { method: 'PUT', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ timeZone: 'Asia/Shanghai', rules: [],
-      defaults: [{ model: legacy.model, rates: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 } }] }),
+      defaults: [{ model: pi.model, rates: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 } }] }),
     signal: AbortSignal.timeout(5000) });
   assert.equal(saved.status, 200);
   const pricing = await browser.newPage();
   pricing.setDefaultTimeout(15_000);
   await pricing.route('https://fonts.**', route => route.abort());
   await pricing.goto(app.base + '/pricing');
-  await pricing.getByLabel('开始日期').fill(legacy.usageDate);
-  await pricing.getByLabel('结束日期').fill(legacy.usageDate);
-  await pricing.getByLabel('仅补算旧版 Pi Agent 的零金额').check();
-  assert.equal(await pricing.getByRole('button', { name: '预览差额' }).isDisabled(), true);
-  await pricing.getByLabel('模型 ID', { exact: true }).last().fill(legacy.model);
+  await pricing.getByLabel('开始日期').fill(pi.usageDate);
+  await pricing.getByLabel('结束日期').fill(pi.usageDate);
+  const toolFilter = pricing.getByLabel('Agent 工具', { exact: true });
+  assert.equal(await toolFilter.inputValue(), '');
+  assert.equal(await pricing.getByText('仅补算旧版 Pi Agent 的零金额').count(), 0);
+  await pricing.getByLabel('模型 ID', { exact: true }).last().fill(pi.model);
+  await pricing.getByRole('button', { name: '预览差额' }).click();
+  await pricing.getByText('+$0.20', { exact: true }).waitFor();
+  await toolFilter.selectOption('Pi Agent');
+  assert.equal(await pricing.getByRole('button', { name: '确认重算' }).count(), 0);
   await pricing.getByRole('button', { name: '预览差额' }).click();
   await pricing.getByText('+$0.10', { exact: true }).waitFor();
   await pricing.getByRole('button', { name: '确认重算' }).click();
   await pricing.getByRole('status').filter({ hasText: '重算完成' }).waitFor();
 
-  const official = { ...legacy, usageDate: '2026-10-28' };
-  assert.equal((await app.ingest({ daily: [official], time: [event({ ...official, eventKey: 'off-peak',
+  const official = { ...pi, usageDate: '2026-10-28' };
+  assert.equal((await app.ingest({ daily: [official], time: [event({ ...official, eventKey: 'off-peak', provider: 'official-reference',
     eventTime: '2026-10-28T04:00:00Z' })] })).status, 200);
   await pricing.getByRole('button', { name: '添加渠道规则' }).click();
   const editor = pricing.getByRole('region', { name: '渠道峰谷价' });
@@ -193,8 +201,7 @@ try {
   await preview.getByRole('button', { name: '预览差额' }).click();
   await preview.getByRole('alert').filter({ hasText: '重算请求失败（HTTP 502）' }).waitFor();
   await pricing.unroute(repriceRoute, failPreview);
-  await preview.getByLabel('仅补算旧版 Pi Agent 的零金额').check();
-  await preview.getByLabel('缺少 Provider 时使用的参考价').selectOption('official-reference');
+  await preview.getByLabel('Agent 工具').selectOption('Pi Agent');
   await preview.getByRole('button', { name: '预览差额' }).click();
   await preview.getByText('+$0.000021', { exact: true }).waitFor();
   await pricing.close();
