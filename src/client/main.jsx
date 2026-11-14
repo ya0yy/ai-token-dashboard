@@ -6,6 +6,7 @@ import { setDisplayTimeZone } from './shared/display-time.js';
 
 const App = lazy(() => import('./dashboard/App.jsx').then(module => ({ default: module.App })));
 const ReviewApp = lazy(() => import('./review/ReviewApp.jsx').then(module => ({ default: module.ReviewApp })));
+const PricingApp = lazy(() => import('./pricing/PricingApp.jsx').then(module => ({ default: module.PricingApp })));
 
 class PageBoundary extends Component {
   state = { failed: false };
@@ -36,6 +37,11 @@ function Root() {
   if (window.location.pathname === '/review') {
     document.title = 'AI Token 复盘 · Token Studio';
     return <ReviewApp />;
+  }
+
+  if (window.location.pathname === '/pricing') {
+    document.title = '模型定价 · Token Studio';
+    return <PricingApp />;
   }
 
   document.title = 'Token Studio · AI Token Dashboard';

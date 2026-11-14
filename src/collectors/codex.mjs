@@ -47,7 +47,7 @@ async function collectJsonlFiles(dir) {
 
 export const CLIENT_KEY = 'codex';
 export const SOURCE_LABEL = 'Codex CLI';
-const CACHE_VERSION = 5;   // bump when parseSessionFile behavior or output changes
+const CACHE_VERSION = 6;   // bump when parseSessionFile behavior or output changes
 const EVENT_HISTORY_DAYS = Number(process.env.TIME_USAGE_HISTORY_DAYS || Infinity);
 const EVENT_CUTOFF_MS = Date.now() - EVENT_HISTORY_DAYS * 24 * 60 * 60 * 1000;
 
@@ -189,7 +189,7 @@ export async function parseSessionFile(filePath, sessionId) {
 }
 
 export function parseSessionText(text, sessionId, state = {}) {
-  let { currentModel = null, previousTotal = null, workspace = null,
+  let { currentModel = null, provider = null, previousTotal = null, workspace = null,
     replaySession = false, replaySecond = null, logSessionId = null, turnId = null } = state;
   const events = [];
 
@@ -206,6 +206,9 @@ export function parseSessionText(text, sessionId, state = {}) {
     if (type === 'session_meta') {
       const payload = entry.payload || {};
       logSessionId ||= payload.id || null;
+      if (typeof payload.model_provider === 'string' && payload.model_provider.trim()) {
+        provider = payload.model_provider.trim();
+      }
       if (isReplaySession(payload)) {
         replaySession = true;
       }
@@ -302,11 +305,11 @@ export function parseSessionText(text, sessionId, state = {}) {
         date = localDateFromTimestamp(timestamp);
       }
 
-      events.push({ timestamp, date, model, workspace, tokens, sessionId: logSessionId || sessionId, turnId });
+      events.push({ timestamp, date, model, provider, workspace, tokens, sessionId: logSessionId || sessionId, turnId });
     }
   }
 
-  return { events, state: { currentModel, previousTotal, workspace,
+  return { events, state: { currentModel, provider, previousTotal, workspace,
     replaySession, replaySecond, logSessionId, turnId } };
 }
 
@@ -359,14 +362,14 @@ export async function collect(pricingData = null) {
       [], { resume: true, ...(appendOnly ? { validate: validAppendCheckpoint } : {}) });
     const parsedEvents = checkpoint.events;
 
-    for (const { timestamp, date, model, workspace, tokens } of parsedEvents) {
+    for (const { timestamp, date, model, provider, workspace, tokens } of parsedEvents) {
       const eventKey = codexEventDedupKey({ timestamp, model, tokens });
       if (eventKey && seenEventKeys.has(eventKey)) continue;
       if (eventKey) seenEventKeys.add(eventKey);
 
       const workspaceKey = workspace || sessionId;
       // Output includes reasoning; that detail must not be billed again.
-      const cost = calculateCost(model, { ...tokens, reasoning: 0 }, pricingData);
+      const cost = calculateCost(model, { ...tokens, reasoning: 0 }, pricingData, provider, { eventTime: timestamp });
       if (keepTimeEvent(timestamp)) {
         events.push({
           client: CLIENT_KEY,
@@ -377,6 +380,7 @@ export async function collect(pricingData = null) {
           workspaceKey,
           workspaceLabel: decodeWorkspace(workspaceKey),
           model,
+          provider,
           tokens,
           cost
         });

@@ -16,6 +16,10 @@ const combinedBasis = rows => {
   if (values.has('unknown')) return 'unknown';
   return values.size === 1 ? [...values][0] : 'mixed';
 };
+const commonVersion = rows => {
+  const versions = new Set(rows.map(row => row.pricingVersion ?? null));
+  return versions.size === 1 ? versions.values().next().value : null;
+};
 const group = rows => {
   const map = new Map();
   for (const row of rows) { const key = bucketKey(row); if (!map.has(key)) map.set(key, []); map.get(key).push(row); }
@@ -48,12 +52,22 @@ export function reconcileSnapshot(previous, incoming, { pricingData = null, full
     const old = oldEvents.get(rowKey('time', row));
     if (!old) return row;
     if (old.model === row.model && sameUsage(old, row)) {
-      return { ...row, costUSD: old.costUSD, costBasis: old.costBasis, pricingVersion: old.pricingVersion };
+      // 重新采集时补齐渠道和调用时间。金额一致的原始费用可以补记来源。
+      const confirmed = row.costBasis === 'recorded' && row.costUSD === old.costUSD;
+      const correctedEstimate = old.costBasis === 'recorded' && row.logEstimateUSD === old.costUSD;
+      return { ...row, provider: row.provider ?? old.provider, pricingTime: row.pricingTime ?? old.pricingTime, hubRepriced: old.hubRepriced,
+        costUSD: old.costUSD, costBasis: correctedEstimate ? 'estimated' : confirmed ? 'recorded' : old.costBasis,
+        pricingVersion: confirmed || correctedEstimate ? null : old.pricingVersion };
     }
     if (row.costBasis === 'recorded' && row.costUSD >= old.costUSD) return row;
-    if (old.model === row.model && hasModelPricing(row.model, pricingData)) {
-      const delta = calculateCost(row.model, pricedTokens(row), pricingData) - calculateCost(old.model, pricedTokens(old), pricingData);
-      return { ...row, costUSD: old.costUSD + Math.max(0, delta), costBasis: delta < 0 || old.costBasis === 'legacy_unknown' ? 'legacy_unknown' : 'mixed' };
+    const provider = row.provider ?? old.provider;
+    const options = { eventTime: row.pricingTime, tiered: row.source !== 'Grok CLI' };
+    if (old.model === row.model && hasModelPricing(row.model, pricingData, provider, options)) {
+      const delta = calculateCost(row.model, pricedTokens(row), pricingData, provider, options)
+        - calculateCost(old.model, pricedTokens(old), pricingData, provider, options);
+      return { ...row, costUSD: old.costUSD + Math.max(0, delta),
+        costBasis: delta < 0 || old.costBasis === 'legacy_unknown' ? 'legacy_unknown' : 'mixed',
+        pricingVersion: delta > 0 ? commonVersion([old, row]) : old.pricingVersion };
     }
     return { ...row, costUSD: old.costUSD, costBasis: 'legacy_unknown', pricingVersion: old.pricingVersion };
   });
@@ -67,8 +81,15 @@ export function reconcileSnapshot(previous, incoming, { pricingData = null, full
     const before = beforeBuckets.get(bucketKey(row)) || [];
     const after = afterBuckets.get(bucketKey(row)) || [];
     const complete = tokenFields.every(key => sum(after, key) === (row[key] || 0)) && after.length > 0;
-    if (!old) return complete ? { ...row, costUSD: sum(after, 'costUSD'), costBasis: combinedBasis(after) } : row;
-    if (sameUsage(old, row)) return { ...row, costUSD: old.costUSD, costBasis: old.costBasis, pricingVersion: old.pricingVersion, pricingLockedAt: old.pricingLockedAt };
+    if (!old) return complete ? { ...row, costUSD: sum(after, 'costUSD'), costBasis: combinedBasis(after),
+      pricingVersion: commonVersion(after) } : row;
+    if (sameUsage(old, row)) {
+      // 旧 Pi 将客户端目录估价当成记录金额。只在整天用量和金额都核对后补正来源。
+      const corrected = old.costBasis === 'recorded' && complete && after.some(event => event.costBasis === 'estimated')
+        && Math.abs(sum(after, 'costUSD') - old.costUSD) <= 1e-8;
+      return { ...row, costUSD: old.costUSD, costBasis: corrected ? combinedBasis(after) : old.costBasis, hubRepriced: old.hubRepriced,
+        pricingVersion: corrected ? commonVersion(after) : old.pricingVersion, pricingLockedAt: old.pricingLockedAt };
+    }
     const accountedDelta = tokenFields.every(key => sum(after, key) - sum(before, key) === (row[key] || 0) - (old[key] || 0));
     // Log rotation is not proof that stored usage disappeared. Only an explicit
     // full rebuild may lower a summary without matching event corrections.
@@ -77,7 +98,9 @@ export function reconcileSnapshot(previous, incoming, { pricingData = null, full
     }
     return {
       ...row, costUSD: accountedDelta ? old.costUSD + Math.max(0, sum(after, 'costUSD') - sum(before, 'costUSD')) : old.costUSD,
+      hubRepriced: old.hubRepriced,
       costBasis: accountedDelta ? combinedBasis([old, ...after]) : 'legacy_unknown',
+      pricingVersion: accountedDelta ? commonVersion([old, ...after]) : old.pricingVersion,
       pricingLockedAt: old.pricingLockedAt
     };
   });
@@ -85,13 +108,23 @@ export function reconcileSnapshot(previous, incoming, { pricingData = null, full
   for (const row of previous.activities || []) {
     activities.set(JSON.stringify([row.project_path, row.model]), row.last_activity);
   }
+  const projectEvents = new Map();
   for (const event of merged.values()) {
     const key = JSON.stringify([event.projectPath, event.model]);
     if (event.eventTime > (activities.get(key) || '')) activities.set(key, event.eventTime);
+    if (!projectEvents.has(key)) projectEvents.set(key, []);
+    projectEvents.get(key).push(event);
   }
+  const oldSessions = new Map(previous.sessions.map(row => [rowKey('sessions', row), row]));
   const sessions = incoming.sessions.map(row => {
     const model = row.model || row.sessionId.slice(row.sessionId.lastIndexOf(':') + 1);
-    return { ...row, lastActivity: row.projectPath ? activities.get(JSON.stringify([row.projectPath, model])) || null : null };
+    const key = JSON.stringify([row.projectPath, model]);
+    const old = oldSessions.get(rowKey('sessions', row));
+    const detail = projectEvents.get(key) || [];
+    // 优先汇总已保留的逐笔费用。增量读取只包含变更日期时，同样用量沿用已有兼容汇总。
+    const complete = row.projectPath && detail.length && tokenFields.every(field => sum(detail, field) === (row[field] || 0));
+    const costUSD = complete ? sum(detail, 'costUSD') : old && sameUsage(old, row) ? old.costUSD : row.costUSD;
+    return { ...row, costUSD, lastActivity: row.projectPath ? activities.get(key) || null : null };
   });
   return { daily, time, sessions };
 }

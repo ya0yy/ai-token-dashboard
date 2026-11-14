@@ -46,10 +46,17 @@ retains a stored day when missing/rotated logs would otherwise reduce it without
 matching event corrections.
 
 `costBasis` is one of `recorded`, `estimated`, `mixed`, `unknown`, or
-`legacy_unknown`. `pricingVersion` identifies the available catalog snapshot,
-not a historical tariff archive. Existing rows gain `legacy_unknown` metadata;
-the schema upgrade does not change their amounts. Zero with unknown provenance
-is not proof of free usage.
+`legacy_unknown`. `pricingVersion` identifies the rules and catalog used for a
+collector estimate. A sum containing multiple pricing versions has no single
+version. Event details store the original `provider` when available and
+`pricingTime` when the collector can identify a call time. The schema upgrade
+adds those columns with null values and retains the stored amounts.
+
+The hub publishes model defaults and daily peak/off-peak rules. An enabled
+rule matches the original provider ID and the dashboard's model grouping. The
+rule's time zone determines which rate applies at the call time. Recorded
+provider charges and incomplete token breakdowns are handled by the source
+collector.
 
 Project counts and rankings use only event details with a real filesystem path.
 Session IDs and lifetime workspace totals are not substitutes for dated project
@@ -99,6 +106,17 @@ obsolete rows, but does not reprice unchanged surviving records.
 `--apply` to back up and fill only amounts supported by complete stored event
 costs. Recorded zero amounts are left unchanged. Missing/incomplete detail is
 left unknown; the command no longer estimates historical totals at today's rate.
+
+The pricing page can preview and apply repricing directly to the hub database.
+Applying requires a matching preview and uses a transaction after saving an
+affected-scope backup. Subsequent uploads of the same events preserve the hub
+amounts. Daily costs are reconciled when the corresponding detail arrives.
+
+`npm run pricing:reprice -- --start YYYY-MM-DD --end YYYY-MM-DD` previews
+explicit repricing with the current published rules. Apply with `--apply`.
+Repricing checks that stored events match each day's token totals and costs,
+keeps recorded charges, and writes a scoped backup. Run it on the source
+database and pass `--push` and `--token` to sync the result to its hub.
 
 ## Synchronization
 
@@ -173,6 +191,13 @@ a transactional migration marker; it does not recalculate historical fees.
   them. Empty full scopes deliberately clear all three usage tables. Invalid
   dates, negative/nonfinite costs, and negative/fractional tokens are rejected
   before any write.
+- `GET /api/pricing` returns the model defaults, policy and version.
+  `PUT /api/pricing` saves the policy with the dashboard credential.
+  `POST /api/pricing/reprice` uses the dashboard credential and previews the
+  inclusive `start` and `end` dates. Submit the same range with the returned
+  `previewId` to apply the changes.
+  `GET /api/pricing/snapshot` uses the ingest credential and returns the
+  versioned policy and catalog used by collectors.
 - `POST /api/collect` remains restricted to direct loopback requests. Foreign
   browser origins and local DNS rebinding requests are rejected.
 

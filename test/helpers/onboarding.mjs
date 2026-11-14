@@ -13,7 +13,8 @@ export function onboardingFixture() {
     claude: { roots: [missing], includeDesktopLocalAgent: false },
     codex: { homes: [missing], headlessRoots: [] }, hermes: { dbPath: join(missing, 'state.db') },
     opencode: { dataDir: missing, extraDbPaths: [] }, gemini: { tmpDir: missing },
-    openclaw: { agentRoots: [missing] }, grok: { roots: [missing] }, dsh: { roots: [missing] }, pi: { roots: [sessions] }
+    openclaw: { agentRoots: [missing] }, grok: { roots: [missing] }, dsh: { roots: [missing] },
+    pi: { roots: [sessions] }, omp: { roots: [missing] }
   } }));
   const dbPath = join(root, 'usage.sqlite');
   const env = { PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),

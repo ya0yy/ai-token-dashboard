@@ -327,7 +327,7 @@ export async function collect(pricingData = null) {
 
       const workspaceKey = workspace || sessionId || 'unknown';
       const date = localDateFromTimestamp(time, 'unknown');
-      const cost = calculateCost(resolvedModel, tokens, pricingData, provider);
+      const cost = calculateCost(resolvedModel, tokens, pricingData, provider, { eventTime: time });
 
       if (time >= EVENT_CUTOFF_MS) {
         events.push({
@@ -339,6 +339,7 @@ export async function collect(pricingData = null) {
           workspaceKey,
           workspaceLabel: workspaceLabel(workspaceKey),
           model: resolvedModel,
+          provider,
           tokens,
           cost
         });

@@ -81,3 +81,13 @@ test('Codex total does not add reasoning twice', () => {
   assert.equal(tokenTotal(tokens, 'codex'), 34);
   assert.equal(tokenTotal(tokens, 'other'), 35);
 });
+
+test('Codex 续读时保留会话中配置的 provider', async () => {
+  const { parseSessionText } = await import('../src/collectors/codex.mjs');
+  const meta = { type: 'session_meta', payload: { model_provider: 'Private-Gateway' } };
+  const context = { type: 'turn_context', payload: { model: 'gpt-5' } };
+  const { state } = parseSessionText([meta, context].map(row => JSON.stringify(row)).join('\n'), 'session');
+  const event = tokenEvent('2026-07-10T09:18:30.688Z', 100, 10, 20, 5, { input: 100, cached: 10, output: 20, reasoning: 5 });
+  const { events } = parseSessionText(JSON.stringify(event), 'session', state);
+  assert.equal(events[0].provider, 'Private-Gateway');
+});

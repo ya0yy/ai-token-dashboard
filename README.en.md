@@ -25,10 +25,10 @@ Reads session logs directly from your machine, aggregates them into a local SQLi
 
 ## Features
 
-- **Multi-source collection** — Claude Code, Codex CLI, OpenCode, Gemini CLI, Hermes Agent, OpenClaw, Grok CLI, DeepSeek Harness, Pi Agent
+- **Multi-source collection** — Claude Code, Codex CLI, OpenCode, Gemini CLI, Hermes Agent, OpenClaw, Grok CLI, DeepSeek Harness, Pi Agent, Oh My Pi
 - **Two views** — interactive usage dashboard (`/`) and a printable retrospective page (`/review`)
 - **Light / dark theme** — follows the OS by default, toggles from the top-right, and the choice is remembered locally across both pages
-- **Cost tracking** — per-model cost estimation via bundled LiteLLM + OpenRouter pricing caches
+- **Cost tracking** — editable model defaults and optional peak/off-peak prices by provider and model
 - **In-app collection** — trigger a local collection run from the dashboard's top-right **Collect** button (loopback only)
 - **Multi-device** — optional push mode to aggregate usage from multiple machines into a single hub
 - **Docker-ready** — one-command deployment as a central ingest server
@@ -49,6 +49,7 @@ Reads session logs directly from your machine, aggregates them into a local SQLi
 | Grok CLI | `~/.grok/sessions/` (override home with `GROK_HOME`) |
 | DeepSeek Harness (DSH) | `~/.dsh/sessions/` (override home with `DSH_HOME`, or sessions with `DSH_SESSIONS`) |
 | Pi Agent | `~/.pi/agent/sessions/` (override agent directory with `PI_CODING_AGENT_DIR`, or sessions with `PI_CODING_AGENT_SESSION_DIR`) |
+| Oh My Pi | `~/.omp/agent/sessions/` (override with `OMP_SESSION_DIR`) |
 
 Only the tools you actually have installed will produce data — others are silently skipped.
 
@@ -56,9 +57,9 @@ Grok counts completed turns by model. Cache and reasoning are split out of their
 
 DSH reads plain `session.jsonl` and multi-frame `session.jsonl.zstd`. Final message usage replaces streaming usage, compaction calls are included, and fork seed history is excluded. Older chunk-only logs are also supported. Costs use model pricing. Compressed logs require the zstd API in Node 22.15+ or 23.8+; older runtimes warn and skip compressed files while still reading plain logs.
 
-Pi reads assistant usage, explicit tool usage, and compaction/branch-summary usage from JSONL. Reasoning is split out of output to avoid double counting. Recorded costs take priority, with model pricing as a fallback. All billed branches remain counted; copied fork history is excluded only when a scanned parent has matching entry IDs, timestamps and usage.
+Pi and Oh My Pi read model usage and the provider from JSONL. Provider-reported costs take priority. For estimates with a complete token breakdown, collectors use the published price when available. Copied fork history is excluded only when a scanned parent has matching entry IDs, timestamps and usage.
 
-Run `npm run pricing:update` to refresh the bundled price snapshots. Estimates use standard snapshot rates (including DeepSeek peak rates), without time-of-day discounts or automatic repricing of historical database rows.
+Open **定价** in the dashboard toolbar to see model defaults and configure peak/off-peak rates.
 
 ---
 
@@ -269,18 +270,32 @@ Notes:
 | `CLAUDE_LOG_APPEND_ONLY` | `0` | Opt-in Claude JSONL byte continuation with the same append-only assumption. Changed files are fully parsed by default; the option preserves streamed revisions, advisor usage and cross-file deduplication. Requires the parse cache; changing modes rebuilds the baseline. See [Claude continuation](docs/collection-performance.md#claude-可选字节续读) |
 | `SUBSCRIPTION_QUOTA_ENABLED` | `true` | Subscription-window bars (Claude/Codex 5-hour / 7-day utilization). Uses local OAuth credentials to query vendor endpoints, refreshing and writing credentials back when needed. Set to `false` to disable this feature |
 
-### Pricing Caches
+### Model Pricing and Historical Repricing
 
 The repository includes two bundled pricing caches:
 
 - `data/pricing-litellm.json`
 - `data/pricing-openrouter.json`
 
-Normal collection prefers these local caches, so cost estimation does not need network access. To refresh upstream pricing manually, run:
+The pricing page (`/pricing`) shows bundled model defaults in USD per million tokens. Add a custom default or enable a provider/model rule. The daily off-peak window follows the configured time zone, includes its start, and excludes its end. It can cross midnight. Missing providers and unmatched rules use the model default.
+
+The hub saves rules in `data/pricing-rules.json`. Collectors with `--push` fetch the hub's snapshot before collection and cache the last valid version. Collectors writing directly to a shared database can set `PRICING_SNAPSHOT_URL` to the hub's `/api/pricing/snapshot` URL and `PRICING_SNAPSHOT_TOKEN` to its ingest token.
+
+To refresh bundled defaults on the hub, run:
 
 ```bash
 npm run pricing:update
 ```
+
+On the hub, open the pricing page, select a date range under historical repricing, and preview the cost difference before applying. The hub backs up the affected data and updates the uploaded estimates. Replaying the same usage keeps the hub's recalculated costs.
+
+To preview from the source database using the CLI:
+
+```bash
+npm run pricing:reprice -- --start 2026-11-01 --end 2026-11-12
+```
+
+Use `--device`, `--source`, or `--model` to narrow the range. Add `--apply` to back up and write the new amounts. For a push deployment, also supply the usual `--push` and `--token` arguments. Repricing uses the currently published version and skips incomplete or unverifiable records.
 
 CLI flags for `npm run collect`:
 
@@ -312,10 +327,10 @@ Apply saves a scoped backup in `data/backups/`, then replaces daily, event and l
 
 ## Privacy & Security
 
-- Collectors read **local files**. Collection using local SQLite without `--push` makes no network calls; a remote `DATABASE_URL` connects to and writes that database.
+- Collectors read **local files**. Local SQLite collection is offline unless a remote price snapshot or push destination is configured. A remote `DATABASE_URL` connects to and writes that database.
 - `npm run pricing:update` intentionally contacts upstream pricing sources to refresh local caches.
 - Nothing is uploaded unless you explicitly pass `--push`.
-- `--push` sends data only to the URL you provide.
+- `--push` reads pricing from the same hub and sends data to the URL you provide.
 - The server binds to loopback by default. External binding requires authentication for the dashboard, read APIs and uploads.
 - `POST /api/collect` only accepts loopback requests, so remote pages cannot trigger local log scans.
 - Do not commit `data/usage.sqlite`, `.env`, or any exported data files.

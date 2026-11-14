@@ -35,10 +35,10 @@ docker pull ghcr.io/ya0yy/ai-token-dashboard:latest
 
 ## 功能特性
 
-- **多源采集** — 支持 Claude Code、Codex CLI、OpenCode、Gemini CLI、Hermes Agent、OpenClaw、Grok CLI、DeepSeek Harness、Pi Agent
+- **多源采集** — 支持 Claude Code、Codex CLI、OpenCode、Gemini CLI、Hermes Agent、OpenClaw、Grok CLI、DeepSeek Harness、Pi Agent、Oh My Pi
 - **双视图** — 交互式用量看板（`/`）和适合阅读与打印的复盘页（`/review`）
 - **亮色 / 暗色主题** — 默认跟随系统，右上角一键切换，选择记在本机，两个页面共用
-- **成本追踪** — 基于随仓库提供的 LiteLLM + OpenRouter 定价缓存，按模型估算 token 费用
+- **成本追踪** — 查看和编辑模型默认价，可按 Provider 和模型启用峰谷价
 - **页面内采集** — 在看板右上角点击「采集」即可触发一次本机采集（仅允许本机访问）
 - **多设备汇聚** — 可选推送模式，将多台机器的用量合并到单一中心节点
 - **Docker 支持** — 一条命令部署中心 ingest 服务
@@ -59,6 +59,7 @@ docker pull ghcr.io/ya0yy/ai-token-dashboard:latest
 | Grok CLI | `~/.grok/sessions/`（可用 `GROK_HOME` 指定 home） |
 | DeepSeek Harness (DSH) | `~/.dsh/sessions/`（可用 `DSH_HOME` 指定 home，或 `DSH_SESSIONS` 指定会话目录） |
 | Pi Agent | `~/.pi/agent/sessions/`（可用 `PI_CODING_AGENT_DIR` 指定 agent 目录，或 `PI_CODING_AGENT_SESSION_DIR` 指定会话目录） |
+| Oh My Pi | `~/.omp/agent/sessions/`（可用 `OMP_SESSION_DIR` 指定会话目录） |
 
 只有实际安装了对应工具才会产生数据，未安装的会被静默跳过。
 
@@ -66,9 +67,9 @@ Grok 按已完成回合的模型用量统计：缓存和 reasoning 从其所属�
 
 DSH 支持明文 `session.jsonl` 和多帧 `session.jsonl.zstd`。优先采用最终消息用量，同时计入上下文压缩调用，排除 fork 继承的历史；旧版仅含流式 usage 的日志也能采集。DSH 费用按模型定价估算。压缩日志需要 Node 22.15+ 或 23.8+ 的 zstd API，不支持时提示并跳过压缩文件，明文日志仍可采集。
 
-Pi 读取 JSONL 中的 assistant 用量、显式 tool 用量及带 usage 的上下文压缩/分支摘要。reasoning 从 output 中拆出，避免重复累计；费用优先使用日志记录值，缺失时按模型价格估算。保留已发生调用的所有分支，只在父会话也位于扫描范围内且记录 ID、时间和用量匹配时排除 fork 复制的历史。
+Pi 和 Oh My Pi 读取 JSONL 中的模型用量和渠道。分类用量完整且模型有价格时，按发布的规则计算费用。其他情况下可使用日志金额。只在父会话也位于扫描范围内且记录 ID、时间和用量匹配时排除 fork 复制的历史。
 
-使用 `npm run pricing:update` 更新随项目保存的价格快照。估算采用快照标准价格（包括 DeepSeek 的峰时标准价），不会自动按调用时段折扣，也不会重算数据库中已经保存的历史费用。
+在看板顶栏点击「定价」打开模型价格表，配置默认价、渠道峰谷价或查看价格版本。
 
 ---
 
@@ -269,6 +270,8 @@ docker compose -f docker-compose.source.yml up -d
 | `DISPLAY_TZ` | 主机时区 | 采集日期与页面筛选、时间显示及小时统计所用的 IANA 时区，如 `Asia/Shanghai`。浏览器沿用服务端设置；各采集端与中心应配置一致。已有日汇总不会随设置变化自动重建 |
 | `DASHBOARD_TOKEN` | _未设置_ | 看板及读取 API 的密码，未设置时复用 `INGEST_TOKEN` |
 | `INGEST_TOKEN` | _未设置_ | 推送鉴权；未设置时复用 `DASHBOARD_TOKEN`。两个都未设置时仅允许本机监听 |
+| `PRICING_SNAPSHOT_URL` | _未设置_ | 直接写共享数据库的采集端可用此项拉取 Hub 价格，如 `https://hub.example/api/pricing/snapshot` |
+| `PRICING_SNAPSHOT_TOKEN` | _未设置_ | 上述接口的令牌，使用 Hub 的 `INGEST_TOKEN` |
 | `SCHEDULED_COLLECT_ENABLED` | `false` | 是否启用服务内置定时采集 |
 | `SCHEDULED_COLLECT_INTERVAL_SECONDS` | `300` | 定时采集间隔秒数，最低 10 秒 |
 | `SCHEDULED_COLLECT_RUN_ON_START` | `false` | 服务启动后是否立即采集一次 |
@@ -279,18 +282,32 @@ docker compose -f docker-compose.source.yml up -d
 | `CLAUDE_LOG_APPEND_ONLY` | `0` | 可选 Claude JSONL 字节续读，沿用相同的只追加约束。默认完整读取并解析变化文件；开启后仍合并流式用量修正、advisor 和跨文件副本。需开启解析缓存，切换模式重建基线；见[Claude 续读](docs/collection-performance.md#claude-可选字节续读) |
 | `SUBSCRIPTION_QUOTA_ENABLED` | `true` | 顶栏的订阅窗口进度条（Claude/Codex 的 5 小时 / 7 天利用率）。使用本机 OAuth 凭据联网查询厂商接口，必要时刷新并回写凭据。设为 `false` 关闭此功能 |
 
-### 定价缓存
+### 模型定价与历史重算
 
 仓库内置两份定价缓存：
 
 - `data/pricing-litellm.json`
 - `data/pricing-openrouter.json`
 
-正常采集会优先使用这些本地缓存，因此不会为了估算价格而访问网络。需要刷新上游价格时可手动运行：
+「模型定价」页（`/pricing`）按美元 / 百万 token 显示内置默认价，可为模型设置覆盖价。渠道规则默认关闭，勾选后才按 `Provider + 模型 ID` 和调用时间选择峰价或谷价。Provider 使用事件明细中的原值，谷时含开始、不含结束，支持跨午夜。未匹配规则、Provider 缺失或缺少调用时间的记录使用模型默认价。
+
+规则保存到 Hub 的 `data/pricing-rules.json`。使用 `--push` 的采集端在每批采集前从 Hub 拉取价格，失败时使用该 Hub 上次成功下载的版本。没有可用缓存时会报告拉取失败。直连共享数据库可设置 `PRICING_SNAPSHOT_URL`；Hub 本机采集默认读取同一份规则文件。
+
+需要刷新 Hub 的内置默认价时可运行：
 
 ```bash
 npm run pricing:update
 ```
+
+保存规则后，新采集的用量按匹配的价格计算。在 Hub 的「模型定价 → 历史费用重算」选择日期，预览原金额、新金额和差额，再确认执行。Hub 会先备份受影响的范围，再更新已上报的估算费用。正常重传相同用量时，Hub 保留重算结果。
+
+也可以在原采集库用命令行预览：
+
+```bash
+npm run pricing:reprice -- --start 2026-11-01 --end 2026-11-12
+```
+
+可加 `--device`、`--source`、`--model` 缩小范围。预览确认后加 `--apply`，先备份再更新；推送部署沿用采集的 `--push` 和 `--token` 参数，提交后同步到 Hub。重算使用当前发布版本，保留已记录的费用，跳过明细不完整、费用来源不确定或缺少可确认调用时间的记录。原始日志仍在时可先正常采集，补充已有事件的 Provider 和调用时间。
 
 `npm run collect` 的 CLI 参数：
 
@@ -321,10 +338,10 @@ npm run collect -- --source "Codex CLI" --full --apply
 
 ## 隐私与安全
 
-- 采集器读取**本机文件**；使用本地 SQLite 且不传 `--push` 时，采集不联网。配置远程 `DATABASE_URL` 后，采集会连接并写入该数据库。
+- 采集器读取**本机文件**；使用本地 SQLite 且未设置远程价格或推送地址时，采集不联网。配置远程 `DATABASE_URL` 后，采集会连接并写入该数据库。
 - `npm run pricing:update` 会主动访问上游定价源，用于刷新本地价格缓存。
 - 除非显式传入 `--push`，否则不会上传任何数据。
-- `--push` 只向你提供的 URL 发送数据。
+- `--push` 从同一 Hub 的价格接口读取规则，并向指定地址发送数据。
 - 默认只监听本机；外部监听必须设置 token，看板、读取 API 和写入 API 均鉴权。
 - `POST /api/collect` 仅允许从本机触发，避免远程页面随意扫描你的本地日志。
 - 不要将 `data/usage.sqlite`、`.env` 或任何采集导出文件提交到 Git。

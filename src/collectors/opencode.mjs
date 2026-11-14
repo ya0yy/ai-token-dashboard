@@ -18,7 +18,7 @@ import { cachedParse, flushCache } from './parse-cache.mjs';
 
 export const CLIENT_KEY = 'opencode';
 export const SOURCE_LABEL = 'OpenCode';
-const CACHE_VERSION = 2;   // bump when parsed message shape changes
+const CACHE_VERSION = 3;   // bump when parsed message shape changes
 const EVENT_HISTORY_DAYS = Number(process.env.TIME_USAGE_HISTORY_DAYS || Infinity);
 const EVENT_CUTOFF_MS = Date.now() - EVENT_HISTORY_DAYS * 24 * 60 * 60 * 1000;
 
@@ -149,7 +149,8 @@ function parseMessageObject(msg, fallbackId, fallbackSessionId, fallbackWorkspac
     : null;
   if (!model) return null;
 
-  const provider = canonicalProvider(msg.providerID || msg.model?.providerID) || inferProviderFromModel(model) || 'unknown';
+  const rawProvider = msg.providerID || msg.model?.providerID || null;
+  const provider = canonicalProvider(rawProvider) || inferProviderFromModel(model) || 'unknown';
   const workspace = msg.path?.root || fallbackWorkspace || null;
   const timestamp = Number(msg.time?.created || 0);
 
@@ -162,6 +163,7 @@ function parseMessageObject(msg, fallbackId, fallbackSessionId, fallbackWorkspac
     date: localDateFromTimestamp(timestamp, 'unknown'),
     model,
     provider,
+    rawProvider,
     workspace,
     workspaceLabel: workspaceLabel(workspace),
     tokens,
@@ -253,7 +255,7 @@ export async function collect(pricingData = null) {
     if (dedupKey && seen.has(dedupKey)) return;
     if (dedupKey) seen.add(dedupKey);
 
-    const calculatedCost = calculateCost(message.model, message.tokens, pricingData, message.provider);
+    const calculatedCost = calculateCost(message.model, message.tokens, pricingData, message.rawProvider, { eventTime: message.eventTime });
     const cost = message.cost > 0 ? message.cost : calculatedCost;
     if (keepTimeEvent(message.eventTime)) {
       events.push({
@@ -265,8 +267,10 @@ export async function collect(pricingData = null) {
         workspaceKey: message.workspace || message.sessionId || 'unknown',
         workspaceLabel: message.workspaceLabel || message.workspace || message.sessionId || 'unknown',
         model: message.model,
+        provider: message.rawProvider,
         tokens: message.tokens,
-        cost
+        cost,
+        costBasis: message.cost > 0 ? 'recorded' : undefined
       });
     }
 

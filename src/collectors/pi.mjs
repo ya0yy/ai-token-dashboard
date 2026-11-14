@@ -4,13 +4,13 @@ import { readdir, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { configuredPaths, expandPath } from '../collector-config.mjs';
-import { calculateCost } from '../pricing.mjs';
+import { calculateCost, hasModelPricing } from '../pricing.mjs';
 import { cachedParse, flushCache } from './parse-cache.mjs';
 import { localDateFromTimestamp, normalizeModelForGrouping } from './utils.mjs';
 
 export const CLIENT_KEY = 'pi';
 export const SOURCE_LABEL = 'Pi Agent';
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 4;
 
 export function sessionRoots() {
   const sessionDir = expandPath(process.env.PI_CODING_AGENT_SESSION_DIR);
@@ -69,7 +69,7 @@ function recordedCost(usage) {
 }
 
 /** Retains every billed branch, including entries no longer in active context. */
-export async function parseSessionFile(filePath) {
+export async function parseSessionFile(filePath, { omp = false } = {}) {
   let source;
   try { source = await readFile(filePath, 'utf8'); } catch { return null; }
   let header = null;
@@ -94,9 +94,16 @@ export async function parseSessionFile(filePath) {
     const inherited = header.version >= 2
       ? (states.get(row.parentId) || {}) : linearState;
     const state = { ...inherited };
-    if (row.type === 'model_change') {
+    // OMP 的角色模型和临时回退不应覆盖会话默认路由。
+    if (row.type === 'model_change' && (!omp || !row.role || row.role === 'default')) {
       state.model = text(row.modelId);
       state.provider = text(row.provider);
+      // OMP 以 provider/model 保存路由，模型 ID 自身也可能含斜杠。
+      const route = omp ? text(row.model)?.match(/^([^/]+)\/(.+)$/) : null;
+      if (route) {
+        state.provider = route[1];
+        state.model = route[2];
+      }
     }
     const message = row.type === 'message' ? row.message : null;
     if (message?.role === 'assistant') {
@@ -108,26 +115,35 @@ export async function parseSessionFile(filePath) {
 
     const isMessage = message && ['assistant', 'toolResult'].includes(message.role);
     const isSummary = row.type === 'compaction' || row.type === 'branch_summary';
-    const usage = isMessage ? message.usage : isSummary ? row.usage : null;
+    const isModelUsage = omp && row.type === 'model_usage';
+    const usage = isMessage ? message.usage : isSummary || isModelUsage ? row.usage : null;
     if (!usage || typeof usage !== 'object' || message?.stopReason === 'pending') continue;
-    const time = timestamp(row.timestamp) ?? timestamp(message?.timestamp);
+    const messageTime = timestamp(message?.timestamp);
+    const entryTime = timestamp(row.timestamp);
+    const time = entryTime ?? messageTime;
     if (time === null) continue;
     const tokens = tokensFromUsage(usage);
     if (!Object.values(tokens).some(value => value > 0)) continue;
     // Tool usage can describe another model; never infer that model from the
     // caller. A missing tool model remains explicitly unknown.
-    const routing = message?.role === 'toolResult' ? {} : state;
+    const routing = message?.role === 'toolResult' || isModelUsage ? {} : state;
     const rawModel = text(message?.responseModel) || text(message?.model)
       || text(row.model) || routing.model || 'unknown';
     const provider = text(message?.provider) || text(row.provider) || routing.provider || null;
     const cost = recordedCost(usage);
+    // Pi 标记渠道真实金额。OMP 的部分网关会把账单写入 total，但旧日志没有来源标记。
+    const reported = usage.cost?.totalFromProvider === true;
+    const ambiguous = omp && usage.cost?.totalFromProvider == null
+      && ['openrouter', 'cline-pass'].includes(provider);
+    const logCostBasis = cost == null ? null : reported ? 'recorded' : ambiguous ? 'legacy_unknown' : 'estimated';
     const entryId = text(row.id);
     events.push({
       eventKey: hash([header.sessionId, entryId || `line:${lineIndex}`]),
       // Forks preserve entry IDs, timestamps and usage. Compare all of them;
       // coincidentally equal token totals in unrelated sessions are not copies.
       fingerprint: entryId ? hash([entryId, row.type, time, rawModel, provider, tokens, cost]) : null,
-      time, model: normalizeModelForGrouping(rawModel), provider, tokens, recordedCost: cost
+      time, pricingTime: messageTime ?? time, model: normalizeModelForGrouping(rawModel), provider, tokens,
+      recordedCost: cost, logCostBasis
     });
   }
   return header ? { ...header, events } : null;
@@ -155,12 +171,16 @@ function addTokens(target, tokens) {
   for (const key of Object.keys(tokens)) target[key] = (target[key] || 0) + tokens[key];
 }
 
-export async function collect(pricingData = null) {
-  const discovered = (await Promise.all(sessionRoots().map(findFiles))).flat();
+export function collect(pricingData = null) {
+  return collectSessions(pricingData, { roots: sessionRoots(), client: CLIENT_KEY });
+}
+
+export async function collectSessions(pricingData, { roots, client, omp = false }) {
+  const discovered = (await Promise.all(roots.map(findFiles))).flat();
   const canonical = await Promise.all(discovered.map(path => realpath(path).catch(() => path)));
   const sessions = new Map();
   for (const filePath of [...new Set(canonical)].sort()) {
-    const parsed = await cachedParse(CLIENT_KEY, CACHE_VERSION, filePath, parseSessionFile);
+    const parsed = await cachedParse(client, CACHE_VERSION, filePath, path => parseSessionFile(path, { omp }));
     if (!parsed) continue;
     const parent = parsed.parentSession && resolve(dirname(filePath), parsed.parentSession);
     const parentPath = parent ? await realpath(parent).catch(() => parent) : null;
@@ -180,10 +200,16 @@ export async function collect(pricingData = null) {
       if (record.fingerprint && inherited.has(record.fingerprint)) continue;
       if (seen.has(record.eventKey)) continue;
       seen.add(record.eventKey);
-      const { time, model, provider, tokens, eventKey } = record;
+      const { time, pricingTime, model, provider, tokens, eventKey } = record;
       const date = localDateFromTimestamp(time);
       const workspace = session.workspace || session.sessionId;
-      const cost = record.recordedCost ?? calculateCost(model, tokens, pricingData, provider);
+      const options = { eventTime: pricingTime };
+      // usage.cost.total 可能是客户端目录估价。有完整分类用量和发布价格时按统一规则计算。
+      const hasPublishedPrice = pricingData?.policy && !tokens.unclassified
+        && !['recorded', 'legacy_unknown'].includes(record.logCostBasis)
+        && hasModelPricing(model, pricingData, provider, options);
+      const useEstimate = record.recordedCost == null || hasPublishedPrice;
+      const cost = useEstimate ? calculateCost(model, tokens, pricingData, provider, options) : record.recordedCost;
       const dailyKey = JSON.stringify([date, model]);
       if (!daily.has(dailyKey)) daily.set(dailyKey, { date, model, tokens: emptyTokens(), cost: 0 });
       const day = daily.get(dailyKey);
@@ -191,22 +217,25 @@ export async function collect(pricingData = null) {
       day.cost += cost;
       const workspaceKey = JSON.stringify([workspace, model]);
       if (!workspaces.has(workspaceKey)) workspaces.set(workspaceKey,
-        { client: CLIENT_KEY, workspaceKey: workspace, workspaceLabel: workspace, model, ...emptyTokens(), cost: 0 });
+        { client, workspaceKey: workspace, workspaceLabel: workspace, model, ...emptyTokens(), cost: 0 });
       const aggregate = workspaces.get(workspaceKey);
       addTokens(aggregate, tokens);
       aggregate.cost += cost;
       if (time >= cutoff) events.push({
-        client: CLIENT_KEY, eventKey, eventTime: new Date(time).toISOString(), usageDate: date,
+        client, eventKey, eventTime: new Date(time).toISOString(), usageDate: date,
         sessionId: session.sessionId, workspaceKey: workspace, workspaceLabel: workspace,
-        model, provider, tokens, cost, costBasis: record.recordedCost != null ? 'recorded' : undefined
+        model, provider, pricingTime, tokens, cost,
+        costBasis: useEstimate ? undefined : record.logCostBasis,
+        ...(useEstimate ? {} : { pricingVersion: null }),
+        ...(record.logCostBasis === 'estimated' ? { logEstimateUSD: record.recordedCost } : {})
       });
     }
   }
-  await flushCache(CLIENT_KEY);
+  await flushCache(client);
   const byDate = new Map();
   for (const row of daily.values()) {
     if (!byDate.has(row.date)) byDate.set(row.date, []);
-    byDate.get(row.date).push({ client: CLIENT_KEY, modelId: row.model, tokens: row.tokens, cost: row.cost });
+    byDate.get(row.date).push({ client, modelId: row.model, tokens: row.tokens, cost: row.cost });
   }
   return {
     graphJson: { contributions: [...byDate].sort(([a], [b]) => a.localeCompare(b))

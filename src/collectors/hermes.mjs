@@ -100,6 +100,7 @@ export async function collect(pricingData = null) {
         COALESCE(cache_read_tokens, 0)   AS cache_read_tokens,
         COALESCE(cache_write_tokens, 0)  AS cache_write_tokens,
         COALESCE(reasoning_tokens, 0)    AS reasoning_tokens,
+        CASE WHEN actual_cost_usd > 0 THEN 'recorded' ELSE 'legacy_unknown' END AS cost_basis,
         COALESCE(actual_cost_usd, estimated_cost_usd, 0) AS cost_usd
       FROM sessions
       WHERE model IS NOT NULL
@@ -127,6 +128,8 @@ export async function collect(pricingData = null) {
         SUM(u.cache_read_tokens) AS cache_read_tokens,
         SUM(u.cache_write_tokens) AS cache_write_tokens,
         SUM(u.reasoning_tokens) AS reasoning_tokens,
+        CASE WHEN COUNT(*) = SUM(CASE WHEN u.actual_cost_usd > 0 THEN 1 ELSE 0 END)
+          THEN 'recorded' ELSE 'legacy_unknown' END AS cost_basis,
         SUM(COALESCE(NULLIF(u.actual_cost_usd, 0), u.estimated_cost_usd, 0)) AS cost_usd
       FROM session_model_usage u JOIN sessions s ON s.id = u.session_id
       WHERE TRIM(COALESCE(u.model, '')) != ''
@@ -145,7 +148,8 @@ export async function collect(pricingData = null) {
   for (const row of rows) {
     const date     = tsToDate(row.started_at);
     const model    = normalizeModelForGrouping(row.model || 'unknown');
-    const provider = canonicalProvider(row.billing_provider) || inferProviderFromModel(model) || 'hermes';
+    const rawProvider = row.billing_provider || null;
+    const provider = canonicalProvider(rawProvider) || inferProviderFromModel(model) || 'hermes';
     const tokens   = {
       input:     pos(row.input_tokens),
       output:    pos(row.output_tokens),
@@ -154,7 +158,7 @@ export async function collect(pricingData = null) {
       reasoning:  pos(row.reasoning_tokens)
     };
     const originalCost = posFloat(row.cost_usd);
-    const calculatedCost = calculateCost(model, tokens, pricingData, provider);
+    const calculatedCost = calculateCost(model, tokens, pricingData, rawProvider);
     const cost = originalCost > 0 ? originalCost : calculatedCost;
     const sessId   = String(row.id || 'unknown');
     if (keepTimeEvent(row.started_at)) {
@@ -167,8 +171,10 @@ export async function collect(pricingData = null) {
         workspaceKey: sessId,
         workspaceLabel: sessId,
         model,
+        provider: rawProvider,
+        pricingTime: null,
         tokens,
-        cost, costBasis: originalCost > 0 ? 'recorded' : undefined
+        cost, costBasis: originalCost > 0 ? row.cost_basis : undefined
       });
     }
 

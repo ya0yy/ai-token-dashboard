@@ -281,7 +281,7 @@ export async function collect(pricingData = null) {
       seenEventKeys.add(eventKey);
       const ms = timestamp * 1000;
       const date = localDateFromTimestamp(timestamp);
-      const cost = recordedCost ?? calculateCost(model, tokens, pricingData, null, { tiered: false });
+      const cost = recordedCost ?? calculateCost(model, tokens, pricingData, null, { tiered: false, eventTime: ms });
 
       if (ms >= EVENT_CUTOFF_MS) {
         events.push({

@@ -1,6 +1,5 @@
 import './load-env.mjs';
 import { hostname } from 'node:os';
-import { resolve } from 'node:path';
 import { backupSnapshot } from './usage-backup.mjs';
 import { openDb, recordRun } from './db.mjs';
 import { readSnapshot, reconcileSnapshot, snapshotDiff, writeSnapshot } from './usage-store.mjs';
@@ -9,7 +8,8 @@ import { applyCollectionDelta, collectionSignature } from './collection-delta.mj
 import { zonedParts } from './timezone.mjs';
 import { projectPath } from './project-identity.mjs';
 import { dedupeEventKeys } from './incremental.mjs';
-import { hasModelPricing, loadPricing, pricingSnapshotTime } from './pricing.mjs';
+import { hasModelPricing } from './pricing.mjs';
+import { loadCollectionPricing } from './pricing-config.mjs';
 import { tokenTotal } from './collectors/utils.mjs';
 
 const COLLECTORS = [
@@ -21,21 +21,19 @@ const COLLECTORS = [
   { module: './collectors/openclaw.mjs', label: 'OpenClaw' },
   { module: './collectors/grok.mjs', label: 'Grok CLI' },
   { module: './collectors/dsh.mjs', label: 'DeepSeek Harness' },
-  { module: './collectors/pi.mjs', label: 'Pi Agent' }
+  { module: './collectors/pi.mjs', label: 'Pi Agent' },
+  { module: './collectors/omp.mjs', label: 'Oh My Pi' }
 ];
 
 const args = parseArgs(process.argv.slice(2));
 const device = args.device || hostname();
 const preview = args.full && !args.apply || args.dryRun;
+const pricingData = await loadCollectionPricing(args);
 const db = await openDb(args.db, { readOnly: Boolean(preview) });
 // A rebuild requires the complete source history. Do not delete old events just
 // because the normal collector has a recent-event retention window.
 if (args.full) process.env.TIME_USAGE_HISTORY_DAYS = 'Infinity';
 const collection = { collectedAt: new Date().toISOString(), scopes: [] };
-
-// Load LiteLLM pricing once — cached to disk, shared across all collectors
-const pricingCachePath = resolve(process.cwd(), 'data', 'pricing-litellm.json');
-const pricingData = await loadPricing(pricingCachePath);
 
 try {
   await collectLocal();
@@ -45,12 +43,6 @@ try {
     console.log(`[push] ${JSON.stringify(result)}`);
   }
 } finally { await db.close(); }
-
-// 推送协议要求定价版本为字符串，避免增量日志保留数字后被服务端拒绝。
-function pricingVersionText() {
-  const version = pricingSnapshotTime();
-  return version == null ? null : String(version);
-}
 
 async function collectLocal() {
   let anyError = false;
@@ -136,6 +128,9 @@ function normalizeTimeRows(json, deviceName) {
     const usageDate = eventTime ? zonedParts(eventTime)?.date : '';
     const source = sourceLabel(entry.client);
     const model = entry.modelId || entry.model || entry.model_id || 'unknown';
+    const provider = typeof entry.provider === 'string' ? entry.provider.trim().slice(0, 255) || null : null;
+    // 没有实际调用时间的汇总记录可保留展示时间，计价时间显式留空。
+    const pricingTime = entry.pricingTime === undefined ? eventTime : normalizeEventTime(entry.pricingTime);
     return {
       device: deviceName,
       source,
@@ -149,6 +144,8 @@ function normalizeTimeRows(json, deviceName) {
       eventTime,
       usageDate,
       model,
+      provider,
+      pricingTime: pricingTime || null,
       projectPath: projectPath(entry.projectPath || entry.workspaceLabel || entry.workspaceKey),
       sessionId: entry.sessionId || null,
       inputTokens: tokens.input,
@@ -158,8 +155,9 @@ function normalizeTimeRows(json, deviceName) {
       reasoningOutputTokens: tokens.reasoning,
       totalTokens,
       costUSD: entry.cost || 0,
-      costBasis: entry.costBasis || (hasModelPricing(model, pricingData) ? 'estimated' : 'unknown'),
-      pricingVersion: entry.costBasis === 'recorded' ? null : pricingVersionText()
+      costBasis: entry.costBasis || (hasModelPricing(model, pricingData, provider, { eventTime: pricingTime || null }) ? 'estimated' : 'unknown'),
+      pricingVersion: entry.costBasis === 'recorded' ? null : entry.pricingVersion === null ? null : pricingData.version,
+      ...(entry.logEstimateUSD != null ? { logEstimateUSD: entry.logEstimateUSD } : {})
     };
   }).filter(row => row.eventTime && row.usageDate && row.totalTokens > 0);
 }
@@ -196,7 +194,7 @@ function normalizeDailyRows(json, deviceName) {
         totalTokens: tokenTotal(tokens, entry.client),
         costUSD: entry.cost || 0,
         costBasis: 'unknown',
-        pricingVersion: pricingVersionText()
+        pricingVersion: pricingData.version
       };
     });
   });
@@ -260,7 +258,8 @@ function sourceLabel(client) {
     hermes: 'Hermes Agent',
     grok: 'Grok CLI',
     dsh: 'DeepSeek Harness',
-    pi: 'Pi Agent'
+    pi: 'Pi Agent',
+    omp: 'Oh My Pi'
   };
   return labels[client] || client || 'unknown';
 }

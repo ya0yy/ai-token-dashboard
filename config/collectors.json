@@ -56,6 +56,11 @@
       "roots": [
         "~/.pi/agent/sessions"
       ]
+    },
+    "omp": {
+      "roots": [
+        "~/.omp/agent/sessions"
+      ]
     }
   }
 }

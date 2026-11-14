@@ -28,7 +28,7 @@ import { cachedParse, flushCache } from './parse-cache.mjs';
 
 export const CLIENT_KEY = 'gemini';
 export const SOURCE_LABEL = 'Gemini CLI';
-const CACHE_VERSION = 1;   // bump when parsed event shape changes
+const CACHE_VERSION = 2;   // bump when parsed event shape changes
 
 // ---------------------------------------------------------------------------
 // Path resolution
@@ -173,6 +173,7 @@ function parseSessionJson(obj, fallbackDate) {
     events.push({
       sessionId,
       date,
+      eventTime: msg.timestamp,
       model: normalizeModelForGrouping(model),
       tokens: {
         input:     netInput + tool,   // tool tokens count as input (mirrors Rust)
@@ -289,6 +290,7 @@ function parseSingleGeminiEvent(obj, sessionId, fallbackDate) {
   return [{
     sessionId,
     date,
+    eventTime: obj.timestamp ?? obj.created_at,
     model: normalizeModelForGrouping(model),
     tokens: { input: netInput + tool, output, cacheRead, cacheWrite: 0, reasoning }
   }];
@@ -433,8 +435,8 @@ export async function collect(pricingData = null) {
    * Accumulate parsed events into the two aggregate maps.
    */
   function accumulate(events) {
-    for (const { sessionId, date, model, tokens } of events) {
-      const cost = calculateCost(model, tokens, pricingData);
+    for (const { sessionId, date, model, tokens, eventTime } of events) {
+      const cost = calculateCost(model, tokens, pricingData, null, { eventTime });
       // Daily
       const dk = `${date}::${model}`;
       if (!dailyMap.has(dk)) dailyMap.set(dk, { date, model, ...zero(), cost: 0 });

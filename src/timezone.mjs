@@ -16,12 +16,13 @@ export function resolveDisplayTz() {
   return zone;
 }
 
-export function zonedParts(value, tz = resolveDisplayTz()) {
+export function zonedParts(value, tz = resolveDisplayTz(), includeMinute = false) {
   const date = new Date(typeof value === 'string' && /^\d{4}-\d{2}-\d{2} /.test(value) ? value.replace(' ', 'T') + 'Z' : value);
   if (!Number.isFinite(date.getTime())) return null;
   if (!formatters.has(tz)) formatters.set(tz, new Intl.DateTimeFormat('en-CA', {
-    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23'
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
   }));
   const parts = Object.fromEntries(formatters.get(tz).formatToParts(date).map(p => [p.type, p.value]));
-  return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) };
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour),
+    ...(includeMinute ? { minute: Number(parts.minute) } : {}) };
 }

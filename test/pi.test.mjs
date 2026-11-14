@@ -203,3 +203,47 @@ test('missing session directories yield empty results and env paths use official
     }
   });
 });
+
+test('OMP 日志可提取模型路由及独立 model_usage 记录', async () => {
+  const omp = await import('../src/collectors/omp.mjs');
+  await withSessions({ 'omp.jsonl': [
+    header('omp', { version: 1 }),
+    { type: 'model_change', model: 'gateway/org/model-one' },
+    { type: 'model_change', model: 'fallback/model-fallback', role: 'fallback' },
+    { type: 'message', id: 'chat', timestamp: new Date(T).toISOString(),
+      message: { role: 'assistant', usage } },
+    { type: 'model_usage', id: 'summary', timestamp: new Date(T).toISOString(),
+      model: 'model-two', provider: 'other-gateway', usage },
+  ] }, async root => {
+    const previous = process.env.OMP_SESSION_DIR;
+    process.env.OMP_SESSION_DIR = root;
+    try {
+      const { eventsJson } = await omp.collect(pricing);
+      assert.deepEqual(eventsJson.events.map(row => [row.client, row.provider, row.model]), [
+        ['omp', 'gateway', 'org/model-one'], ['omp', 'other-gateway', 'model-two']
+      ]);
+    } finally {
+      if (previous === undefined) delete process.env.OMP_SESSION_DIR;
+      else process.env.OMP_SESSION_DIR = previous;
+    }
+  });
+});
+
+test('Pi 使用请求时间和原始 provider 匹配服务端峰谷价', async () => {
+  const rate = input => ({ input, output: 0, cacheRead: 0, cacheWrite: 0 });
+  const policy = { timeZone: 'Asia/Shanghai', defaults: [], rules: [{
+    provider: 'test-provider', model: 'model-one', enabled: true,
+    peak: rate(100), offPeak: rate(20), offPeakStart: '23:30', offPeakEnd: '06:15',
+    effectiveFrom: '2026-11-01'
+  }] };
+  const record = reply('a', { timestamp: '2026-11-01T15:30:01Z' });
+  record.message.timestamp = Date.parse('2026-11-01T15:29:59Z');
+  await withSessions({ 's.jsonl': [header('s'), record] }, async () => {
+    const result = await collect({ policy });
+    const event = result.eventsJson.events[0];
+    assert.equal(event.cost, 0.01);
+    assert.equal(event.pricingTime, record.message.timestamp);
+    assert.notEqual(event.costBasis, 'recorded');
+    assert.equal(result.graphJson.contributions[0].clients[0].cost, 0.01);
+  });
+});

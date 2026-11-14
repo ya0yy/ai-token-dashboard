@@ -34,7 +34,7 @@ try {
   assert.equal(ready.summary.error, 0);
   assert.equal(ready.checks.find(check => check.id === 'collection.pi').status, 'ok');
   server = await startServer(f.env, { staticDir: resolve('dist') });
-  for (const path of ['/', '/review']) {
+  for (const path of ['/', '/review', '/pricing']) {
     const page = await fetch(server.base + path);
     assert.equal(page.status, 200);
     const html = await page.text();

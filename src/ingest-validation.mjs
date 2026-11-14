@@ -17,14 +17,14 @@ function timestamp(value, name) {
       || !Number.isFinite(Date.parse(value))) throw new Error(`Invalid ${name}`);
 }
 
-export function validateIngest(payload) {
+export function validateIngest(payload, { maxRows = 100_000 } = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Expected an object');
   const mode = payload.mode ?? 'incremental';
   if (!['incremental', 'full'].includes(mode)) throw new Error('Invalid mode');
   const result = { mode };
   for (const kind of ['daily', 'time', 'sessions', 'runs', 'scopes']) {
     const rows = payload[kind] ?? [];
-    if (!Array.isArray(rows) || rows.length > 100_000) throw new Error(`Invalid ${kind} array`);
+    if (!Array.isArray(rows) || rows.length > maxRows) throw new Error(`Invalid ${kind} array`);
     result[kind] = rows.map(row => {
       if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error(`Invalid ${kind} row`);
       text(row.device, 'device', { max: 255 });
@@ -42,19 +42,24 @@ export function validateIngest(payload) {
       if (row.costUSD != null && (typeof row.costUSD !== 'number' || !Number.isFinite(row.costUSD) || row.costUSD < 0)) throw new Error('Invalid costUSD');
       if (row.costBasis != null && !['legacy_unknown', 'estimated', 'recorded', 'mixed', 'unknown'].includes(row.costBasis)) throw new Error('Invalid costBasis');
       text(row.pricingVersion, 'pricingVersion', { optional: true, max: 64 });
+      if (row.hubRepriced != null && ![0, 1].includes(row.hubRepriced)) throw new Error('Invalid hubRepriced');
       text(row.model, 'model', { optional: true, max: 255 });
       text(row.projectPath, 'projectPath', { optional: true });
       if (kind !== 'sessions' && !validDate(row.usageDate)) throw new Error('Invalid usageDate');
       if (kind === 'time') {
         text(row.eventKey, 'eventKey');
+        text(row.provider, 'provider', { optional: true, max: 255 });
         text(row.sessionId, 'sessionId', { optional: true });
         timestamp(row.eventTime, 'eventTime');
+        if (row.pricingTime != null) timestamp(row.pricingTime, 'pricingTime');
       }
       if (kind === 'sessions') {
         text(row.sessionId, 'sessionId');
         if (row.lastActivity != null) timestamp(row.lastActivity, 'lastActivity');
       }
-      return { ...row, ...(kind === 'time' ? { eventTime: new Date(row.eventTime).toISOString() } : {}) };
+      if (kind !== 'time') return { ...row };
+      return { ...row, eventTime: new Date(row.eventTime).toISOString(),
+        pricingTime: row.pricingTime == null ? null : new Date(row.pricingTime).toISOString() };
     });
   }
   // Full replacement must name its scope, including sources whose replacement

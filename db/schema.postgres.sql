@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS daily_usage (
   cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
   cost_basis TEXT NOT NULL DEFAULT 'legacy_unknown',
   pricing_version TEXT,
+  hub_repriced INTEGER NOT NULL DEFAULT 0,
   pricing_locked_at TEXT,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (device, source, usage_date, model)
@@ -71,6 +72,8 @@ CREATE TABLE IF NOT EXISTS time_usage (
   source TEXT NOT NULL,
   event_key TEXT NOT NULL,
   event_time TEXT NOT NULL,
+  pricing_time TEXT,
+  provider TEXT,
   usage_date TEXT NOT NULL,
   model TEXT NOT NULL DEFAULT '',
   project_path TEXT,
@@ -84,6 +87,7 @@ CREATE TABLE IF NOT EXISTS time_usage (
   cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
   cost_basis TEXT NOT NULL DEFAULT 'legacy_unknown',
   pricing_version TEXT,
+  hub_repriced INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (device, source, event_key)
 );

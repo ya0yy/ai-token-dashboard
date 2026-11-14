@@ -10,11 +10,12 @@ const cost = [['cost_usd', 'costUSD', 0], ['cost_basis', 'costBasis', 'legacy_un
 export const TABLES = {
   daily: { table: 'daily_usage', keys: ['device', 'source', 'usage_date', 'model'], fields: [
     ['device', 'device'], ['source', 'source'], ['usage_date', 'usageDate'], ['model', 'model', ''],
-    ...usage, ...cost, ['pricing_locked_at', 'pricingLockedAt', null]
+    ...usage, ...cost, ['pricing_locked_at', 'pricingLockedAt', null], ['hub_repriced', 'hubRepriced', 0]
   ] },
   time: { table: 'time_usage', keys: ['device', 'source', 'event_key'], fields: [
     ['device', 'device'], ['source', 'source'], ['event_key', 'eventKey'], ['event_time', 'eventTime'],
-    ['usage_date', 'usageDate'], ['model', 'model', ''], ['project_path', 'projectPath', null], ['session_id', 'sessionId', null], ...usage, ...cost
+    ['usage_date', 'usageDate'], ['model', 'model', ''], ['provider', 'provider', null], ['pricing_time', 'pricingTime', null],
+    ['project_path', 'projectPath', null], ['session_id', 'sessionId', null], ...usage, ...cost, ['hub_repriced', 'hubRepriced', 0]
   ] },
   sessions: { table: 'session_usage', keys: ['device', 'source', 'session_id'], fields: [
     ['device', 'device'], ['source', 'source'], ['session_id', 'sessionId'], ['last_activity', 'lastActivity', null],

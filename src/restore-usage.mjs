@@ -15,13 +15,13 @@ for (let i = 2; i < process.argv.length; i++) {
 if (!args.file) throw new Error('Usage: npm run db:restore -- --file data/backups/usage-....json [--db path] [--apply]');
 const backup = JSON.parse(readFileSync(args.file, 'utf8'));
 if (backup.version !== 1) throw new Error('Unsupported backup version');
-const next = validateIngest({ ...backup, mode: 'full' });
+const next = validateIngest({ ...backup, mode: 'full' }, { maxRows: Infinity });
 const db = await openDb(args.db, { readOnly: !args.apply });
 try {
   const previous = { daily: [], time: [], sessions: [] };
   for (const scope of next.scopes) {
     const rows = await readSnapshot(db, scope.device, scope.source);
-    for (const kind of Object.keys(previous)) previous[kind].push(...rows[kind]);
+    for (const kind of Object.keys(previous)) for (const row of rows[kind]) previous[kind].push(row);
   }
   console.log(`[${args.apply ? 'restore' : 'preview'}] ${JSON.stringify(snapshotDiff(previous, next))}`);
   if (args.apply) {

@@ -10,8 +10,9 @@ import * as openclaw from './collectors/openclaw.mjs';
 import * as grok from './collectors/grok.mjs';
 import * as dsh from './collectors/dsh.mjs';
 import * as pi from './collectors/pi.mjs';
+import * as omp from './collectors/omp.mjs';
 
-export const sourceKeys = new Map([claude, codex, hermes, opencode, gemini, openclaw, grok, dsh, pi]
+export const sourceKeys = new Map([claude, codex, hermes, opencode, gemini, openclaw, grok, dsh, pi, omp]
   .map(source => [source.SOURCE_LABEL, source.CLIENT_KEY]));
 
 export function sourceChecks() {
@@ -34,6 +35,7 @@ export function sourceChecks() {
     source(openclaw, openclaw.getAgentRoots().map(path => directory(path, name => /\.(jsonl(?:\.gz|\.zstd)?|db)$/.test(name)))),
     source(grok, grok.getSessionRoots().map(path => directory(path, name => name === 'updates.jsonl'))),
     source(dsh, dsh.getSessionRoots().map(path => directory(path, name => /^session\.jsonl(?:\.zstd)?$/.test(name)))),
-    source(pi, pi.sessionRoots().map(path => directory(path, jsonl)))
+    source(pi, pi.sessionRoots().map(path => directory(path, jsonl))),
+    source(omp, omp.sessionRoots().map(path => directory(path, jsonl)))
   ];
 }

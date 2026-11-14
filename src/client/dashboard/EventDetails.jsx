@@ -26,7 +26,7 @@ export function EventDetails({ query }) {
       <div ref={wrap} className="table-wrap" style={{ maxHeight: 360, overflow: 'auto' }}><table className="dt">
         <thead><tr>{['时间', '来源 / 模型', '项目', 'Token', '费用'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
         <tbody>{state.time.map(row => <tr key={row.id}>
-          <td>{U.formatTs(row.eventTime)}</td><td>{row.source}<br/>{row.model}</td><td>{row.projectPath || '未归属项目'}</td>
+          <td>{U.formatTs(row.eventTime)}</td><td>{row.source}<br/>{row.model}{row.provider && <><br/><small className="muted">{row.provider}</small></>}</td><td>{row.projectPath || '未归属项目'}</td>
           <td>{U.fmt.format(row.totalTokens)}</td><td>{U.fmtUS4.format(row.costUSD)}</td>
         </tr>)}{!state.time.length && <tr><td colSpan={5}>当前范围没有事件明细</td></tr>}</tbody>
       </table></div>}

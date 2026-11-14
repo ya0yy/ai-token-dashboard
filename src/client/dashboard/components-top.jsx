@@ -164,6 +164,7 @@ function Topbar({ lastSync, onRefresh, refreshing, onCollect, collecting, collec
         <div className="page-switch">
           <span className="page-chip active">看板</span>
           <a href="/review" className="page-chip">复盘</a>
+          <a href="/pricing" className="page-chip">定价</a>
         </div>
       </div>
       <div className="topbar-right">

@@ -21,7 +21,8 @@ function history(path) {
   const reader = new DatabaseSync(path, { readOnly: true });
   try {
     assert.equal(reader.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
-    return tables.map(table => reader.prepare(`SELECT * FROM ${table} WHERE device = 'upgrade' ORDER BY rowid`).all());
+    return tables.map(table => reader.prepare(`SELECT * FROM ${table} WHERE device = 'upgrade' ORDER BY rowid`).all()
+      .map(row => ({ ...row })));
   } finally { reader.close(); }
 }
 try {
@@ -47,12 +48,17 @@ try {
   try { backupReader.prepare('VACUUM INTO ?').run(backup); }
   finally { backupReader.close(); }
   const before = history(backup);
+  const upgraded = before.map((rows, index) => {
+    if (tables[index] === 'time_usage') return rows.map(row => ({ ...row, provider: null, pricing_time: null, hub_repriced: 0 }));
+    if (tables[index] === 'daily_usage') return rows.map(row => ({ ...row, hub_repriced: 0 }));
+    return rows;
+  });
   run('src/db-init.mjs');
   run('src/db-init.mjs');
-  assert.deepEqual(history(f.dbPath), before, 'repeated upgrades must preserve every historical usage field');
+  assert.deepEqual(history(f.dbPath), upgraded, 'repeated upgrades must preserve every historical usage field');
   f.seed();
   run('src/collect.mjs', ['--device', 'onboarding', '--source', 'Pi Agent']);
-  assert.deepEqual(history(f.dbPath), before, 'new collection must preserve unrelated historical usage');
+  assert.deepEqual(history(f.dbPath), upgraded, 'new collection must preserve unrelated historical usage');
 
   hub = await startServer({ INGEST_TOKEN: 'synthetic-upgrade-token' });
   const options = { url: hub.base + '/api/ingest', token: 'synthetic-upgrade-token', device: 'upgrade' };
@@ -67,13 +73,13 @@ try {
       const stored = remote.prepare(`SELECT * FROM ${tables[i]} ORDER BY rowid`).all();
       assert.equal(stored.length, before[i].length);
       for (let j = 0; j < stored.length; j++) {
-        for (const key of Object.keys(before[i][j]).filter(key => !['updated_at', 'pricing_locked_at'].includes(key))) {
-          assert.equal(stored[j][key], before[i][j][key], `${tables[i]}.${key}`);
+        for (const key of Object.keys(upgraded[i][j]).filter(key => !['updated_at', 'pricing_locked_at'].includes(key))) {
+          assert.equal(stored[j][key], upgraded[i][j][key], `${tables[i]}.${key}`);
         }
       }
     }
   } finally { remote.close(); }
-  assert.deepEqual(history(f.dbPath), before);
+  assert.deepEqual(history(f.dbPath), upgraded);
   await db.close(); db = null;
 
   // All writers to this disposable DB are stopped before swapping files.
@@ -84,7 +90,7 @@ try {
   try { assert.equal(restored.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name LIKE 'sync_%'").get().n, 0); }
   finally { restored.close(); }
   run('src/db-init.mjs');
-  assert.deepEqual(history(f.dbPath), before, 'restored database must remain upgradeable');
+  assert.deepEqual(history(f.dbPath), upgraded, 'restored database must remain upgradeable');
   console.log('Upgrade passed: frozen pre-journal SQLite → backup → initialize twice → collect → HTTP baseline → restart/no-op sync → restore/re-upgrade; historical fields preserved.');
 } finally {
   if (db) await db.close();

@@ -31,6 +31,7 @@ const PALETTE = {
   'Amp':                'oklch(0.62 0.16 20)',
   // pi-agent → pink
   'Pi Agent':           'oklch(0.63 0.14 330)',
+  'Oh My Pi':           'oklch(0.60 0.16 305)',
   'pi-agent':           'oklch(0.63 0.14 330)',
 };
 
@@ -260,7 +261,7 @@ function alpha(color, a) {
 const SOURCE_ORDER = [
   'Claude Code', 'Codex CLI', 'OpenCode', 'Gemini CLI', 'Hermes Agent', 'OpenClaw',
   'Grok CLI',
-  'DeepSeek Harness', 'Pi Agent'
+  'DeepSeek Harness', 'Pi Agent', 'Oh My Pi'
 ];
 
 function sortSources(list) {

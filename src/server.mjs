@@ -4,7 +4,7 @@ import { pipeline } from 'node:stream';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createGzip } from 'node:zlib';
-import { extname, join, resolve, sep } from 'node:path';
+import { basename, extname, join, resolve, sep } from 'node:path';
 import { URL } from 'node:url';
 import {
   openDb,
@@ -12,10 +12,11 @@ import {
 } from './db.mjs';
 import { batchUpsertDaily, batchUpsertSession, batchUpsertTimeUsage } from './db-batch.mjs';
 import { loadCollectorConfig } from './collector-config.mjs';
-import { loadPricing, hasModelPricing, pricingSnapshotTime } from './pricing.mjs';
+import { loadPricing, hasModelPricing, pricingSnapshotTime, defaultPriceTable } from './pricing.mjs';
+import { currentPricingSnapshot, readPricingPolicy, savePricingPolicy, validatePricingPolicy } from './pricing-config.mjs';
 import { queryQuota } from './quota.mjs';
 import { authorize, isLoopback, serverAccess, trustedRequest } from './http-security.mjs';
-import { validateIngest } from './ingest-validation.mjs';
+import { validDate, validateIngest } from './ingest-validation.mjs';
 import { queryDaily, queryTime, queryTimeSummary, queryUsageMetadata, queryHourly, dateWhere } from './usage-query.mjs';
 import { invalidateCollectionState } from './collection-state.mjs';
 import { collectionNotifications } from './collection-notifications.mjs';
@@ -23,6 +24,9 @@ import { streamUsageCsv } from './usage-export.mjs';
 import { listenError } from './listen-error.mjs';
 import { resetUsageChanges, exactColumn } from './sync-journal.mjs';
 import { requestCache } from './request-cache.mjs';
+import { normalizeModelForGrouping } from './collectors/utils.mjs';
+import { repriceUsage } from './reprice-store.mjs';
+import { preserveHubRepricing, reconcileHubRepricing } from './hub-repriced-ingest.mjs';
 
 // Live subscription-window quota is the one feature that makes outbound calls
 // (to the vendors' usage endpoints, using the OAuth token the CLIs stored
@@ -70,7 +74,7 @@ const server = createServer((req, res) => {
 async function handleRequest(req, res) {
   if (!trustedRequest(req, access)) { sendJson(res, { error: 'Untrusted request origin' }, 403); return; }
   const url = new URL(req.url, `http://${req.headers.host}`);
-  if (!authorize(req, res, access, url.pathname === '/api/ingest')) return;
+  if (!authorize(req, res, access, ['/api/ingest', '/api/pricing/snapshot'].includes(url.pathname))) return;
   if (url.pathname.startsWith('/api/')) {
     await handleApi(req, url, res);
     return;
@@ -89,6 +93,26 @@ server.listen(port, access.host, () => {
 });
 
 async function handleApi(req, url, res) {
+  if (url.pathname === '/api/pricing/snapshot' && req.method === 'GET') {
+    const snapshot = await currentPricingSnapshot();
+    const etag = `"${snapshot.version}"`;
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
+      res.end();
+      return;
+    }
+    res.setHeader('etag', etag);
+    sendJson(res, snapshot);
+    return;
+  }
+  if (url.pathname === '/api/pricing') {
+    await handlePricing(req, res);
+    return;
+  }
+  if (url.pathname === '/api/pricing/reprice') {
+    await handleReprice(req, res);
+    return;
+  }
   if (url.pathname === '/api/config') {
     sendJson(res, { displayTimeZone: resolveDisplayTz() });
     return;
@@ -114,13 +138,16 @@ async function handleApi(req, url, res) {
     try { usage = await queryDaily(db, url.searchParams, pricingData); }
     catch (error) { sendJson(res, { error: error.message }, 400); return; }
     const rawDaily = usage.daily;
+    const policy = await readPricingPolicy();
+    const configuredModels = new Set([...policy.defaults, ...policy.rules.filter(rule => rule.enabled)]
+      .map(rule => normalizeModelForGrouping(rule.model)));
 
     sendJson(res, {
       ...await queryUsageMetadata(db),
       pricing: {
         primarySnapshotAt: pricingSnapshotTime(),
         models: Object.fromEntries([...new Set(rawDaily.map(d => d.model))]
-          .map(model => [model, hasModelPricing(model, pricingData)]))
+          .map(model => [model, configuredModels.has(normalizeModelForGrouping(model)) || hasModelPricing(model, pricingData)]))
       },
       ...usage,
       sessions: [], // Legacy lifetime workspace totals are not dated sessions.
@@ -334,15 +361,19 @@ async function handleIngest(req, res) {
     }
 
     await db.transaction(async (tx) => {
-      await invalidateCollectionState(tx, [...(fullRebuild ? payload.scopes : []), ...dailyRows, ...timeRows, ...sessionRows]);
+      const scopes = [...new Map([...payload.scopes, ...dailyRows, ...timeRows, ...sessionRows]
+        .map(({ device, source }) => [JSON.stringify([device, source]), { device, source }])).values()];
+      await invalidateCollectionState(tx, scopes);
+      const reconciled = await preserveHubRepricing(tx, scopes, dailyRows, timeRows);
       for (const row of timePairs.values()) {
         for (const table of ['daily_usage', 'time_usage', 'session_usage']) {
           await tx.run(`DELETE FROM ${table} WHERE ${exactColumn(tx, 'device')} = ? AND ${exactColumn(tx, 'source')} = ?`, [row.device, row.source]);
         }
       }
       if (fullRebuild) await resetUsageChanges(tx, payload.scopes);
-      await batchUpsertDaily(tx, dailyRows);
-      await batchUpsertTimeUsage(tx, timeRows);
+      await batchUpsertDaily(tx, reconciled.daily);
+      await batchUpsertTimeUsage(tx, reconciled.time);
+      await reconcileHubRepricing(tx, reconciled.affected);
       await batchUpsertSession(tx, sessionRows);
       for (const row of runRows) await recordRun(tx, row);
     });
@@ -364,7 +395,7 @@ function serveStatic(req, pathname, res) {
   } catch {
     decoded = pathname;
   }
-  const filePath = decoded === '/' || decoded === '/review'
+  const filePath = ['/', '/review', '/pricing'].includes(decoded)
     ? join(staticDir, 'index.html')
     : join(staticDir, decoded);
   // Require the resolved path to live under staticDir. The trailing separator
@@ -405,6 +436,65 @@ function serveStatic(req, pathname, res) {
 
 function all(sql, params) {
   return db.all(sql, params);
+}
+
+async function handlePricing(req, res) {
+  if (req.method === 'PUT') {
+    if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) {
+      sendJson(res, { error: '请使用 application/json 提交价格规则' }, 415);
+      return;
+    }
+    let policy;
+    try { policy = validatePricingPolicy(await readJson(req)); }
+    catch (error) {
+      sendJson(res, { error: error.message }, 400);
+      return;
+    }
+    await savePricingPolicy(policy);
+    console.log(`[模型定价] 已保存，默认价: ${policy.defaults.length}，峰谷规则: ${policy.rules.length}，时区: ${policy.timeZone}`);
+  } else if (req.method !== 'GET') {
+    sendJson(res, { error: '请求方法不受支持' }, 405);
+    return;
+  }
+  const { version, policy, ...catalog } = await currentPricingSnapshot();
+  sendJson(res, { version, policy, models: defaultPriceTable(catalog) });
+}
+
+async function handleReprice(req, res) {
+  if (req.method !== 'POST') {
+    sendJson(res, { error: '请求方法不受支持' }, 405);
+    return;
+  }
+  if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) {
+    sendJson(res, { error: '请使用 application/json 提交重算范围' }, 415);
+    return;
+  }
+  let options;
+  try {
+    const { start, end, previewId } = await readJson(req);
+    if (!validDate(start) || !validDate(end) || start > end) throw new Error('请选择有效的开始和结束日期');
+    if (previewId !== undefined && (typeof previewId !== 'string' || !/^[a-f0-9]{64}$/.test(previewId))) {
+      throw new Error('请先预览这段日期的费用差额');
+    }
+    options = { start, end, previewId, apply: previewId !== undefined, protect: true };
+  } catch (error) {
+    sendJson(res, { error: error.message }, 400);
+    return;
+  }
+  try {
+    const pricing = await currentPricingSnapshot();
+    const { scopes, backupPath, ...result } = await repriceUsage(db, pricing, options);
+    console.log(`[费用重算] ${options.apply ? '执行' : '预览'}，开始: ${options.start}，结束: ${options.end}，范围: ${scopes.length}，调用: ${result.counts.time}，差额 USD: ${result.difference}，价格版本: ${pricing.version}`);
+    if (backupPath) console.log(`[费用重算] 服务端备份: ${backupPath}`);
+    sendJson(res, { ...result, backupFile: backupPath ? basename(backupPath) : null });
+  } catch (error) {
+    if (error.status === 409) {
+      sendJson(res, { error: error.message }, 409);
+      return;
+    }
+    console.error('[费用重算] 处理失败，请检查价格规则、数据库和备份目录权限。', error);
+    sendJson(res, { error: '费用重算失败，请查看服务端日志' }, 500);
+  }
 }
 
 function sendJson(res, value, status = 200) {

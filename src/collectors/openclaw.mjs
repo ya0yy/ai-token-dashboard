@@ -34,12 +34,12 @@ import { decodeZstdContainer } from './dsh.mjs';
 import { parseSessionFile as parseCodexSession } from './codex.mjs';
 import { configuredPaths } from '../collector-config.mjs';
 import { calculateCost } from '../pricing.mjs';
-import { canonicalProvider, localDateFromTimestamp, normalizeModelForGrouping } from './utils.mjs';
+import { localDateFromTimestamp, normalizeModelForGrouping } from './utils.mjs';
 import { cachedParse, flushCache } from './parse-cache.mjs';
 
 export const CLIENT_KEY  = 'openclaw';
 export const SOURCE_LABEL = 'OpenClaw';
-const CACHE_VERSION = 3;   // bump when parseSessionFile output shape changes
+const CACHE_VERSION = 4;   // bump when parseSessionFile output shape changes
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -242,7 +242,8 @@ function parseTranscript(text, sessionId, agentPath, fallbackTimestamp, origin) 
 
       // Date from message timestamp (milliseconds since epoch)
       let date = fallbackDate;
-      const timestamp = msg.timestamp ?? entry.timestamp ?? fallbackTimestamp;
+      const pricingTime = msg.timestamp ?? entry.timestamp ?? null;
+      const timestamp = pricingTime ?? fallbackTimestamp;
       if (timestamp != null) {
         date = localDateFromTimestamp(timestamp, fallbackDate);
       }
@@ -258,10 +259,11 @@ function parseTranscript(text, sessionId, agentPath, fallbackTimestamp, origin) 
         agentPath,
         eventKey,
         timestamp,
+        pricingTime,
         mirrorTurn: mirror ? `${mirror[1]}:${mirror[2]}` : null,
         date,
         model: normalizeModelForGrouping(model),
-        provider: canonicalProvider(provider) || provider,
+        provider: provider === 'unknown' ? null : provider,
         tokens: {
           input:     pos(usage.input),
           output:    pos(usage.output),
@@ -361,11 +363,11 @@ async function collectEmbeddedCodex(agentPath) {
   for (const subdir of ['sessions', 'archived_sessions']) {
     for (const file of await transcriptFiles(join(home, subdir))) {
       if (!file.endsWith('.jsonl')) continue;
-      const records = await cachedParse('openclaw-codex', 1, file, path => parseCodexSession(path, basename(path, '.jsonl')));
+      const records = await cachedParse('openclaw-codex', 2, file, path => parseCodexSession(path, basename(path, '.jsonl')));
       for (const record of records) {
         const reasoning = Math.min(record.tokens.output, record.tokens.reasoning);
         const tokens = { ...record.tokens, output: record.tokens.output - reasoning, reasoning };
-        result.push({ ...record, tokens, agentPath, provider: 'openai', cost: null,
+        result.push({ ...record, tokens, agentPath, pricingTime: record.timestamp, cost: null,
           mirrorTurn: record.turnId ? `${record.sessionId}:${record.turnId}` : null,
           eventKey: createHash('sha256').update(JSON.stringify(['codex', record.sessionId, record.turnId, record.timestamp, tokens])).digest('hex') });
       }
@@ -422,15 +424,15 @@ export async function collect(pricingData = null) {
   const timeEvents = [];
 
   function accumulate(events) {
-    for (const { sessionId, agentPath, date, model, provider, tokens, cost, eventKey, timestamp } of events) {
+    for (const { sessionId, agentPath, date, model, provider, tokens, cost, eventKey, timestamp, pricingTime } of events) {
       if (seen.has(eventKey)) continue;
       seen.add(eventKey);
-      const calculatedCost = calculateCost(model, tokens, pricingData, provider);
+      const calculatedCost = calculateCost(model, tokens, pricingData, provider, { eventTime: pricingTime });
       const effectiveCost = cost ?? calculatedCost;
       const ms = typeof timestamp === 'number' ? (timestamp < 1e12 ? timestamp * 1000 : timestamp) : Date.parse(timestamp);
       if (Number.isFinite(ms) && ms >= Date.now() - Number(process.env.TIME_USAGE_HISTORY_DAYS || Infinity) * 86400000) {
         timeEvents.push({ client: CLIENT_KEY, eventKey, eventTime: new Date(ms).toISOString(), usageDate: date,
-          sessionId, workspaceKey: agentPath, workspaceLabel: agentPath, model, provider, tokens, cost: effectiveCost, costBasis: cost != null ? 'recorded' : undefined });
+          sessionId, workspaceKey: agentPath, workspaceLabel: agentPath, model, provider, pricingTime, tokens, cost: effectiveCost, costBasis: cost != null ? 'recorded' : undefined });
       }
 
       // Daily

@@ -409,8 +409,10 @@ function aggregateRecord(record, dailyMap, wmMap, pricingData, events) {
   const date = localDateFromTimestamp(record.timestamp);
   const model = normalizeModelForGrouping(record.model);
   const tokens = record.tokens || extractTokens(record.usage);
-  const calculatedCost = calculateCost(model, tokens, pricingData);
-  const costUSD = calculatedCost > 0 ? calculatedCost : record.costUSD;
+  const calculatedCost = calculateCost(model, tokens, pricingData, null, { eventTime: record.timestamp });
+  // 来源金额优先。没有记录金额时，显式零价仍属于可计价的模型。
+  const useEstimate = record.costUSD <= 0;
+  const costUSD = useEstimate ? calculatedCost : record.costUSD;
 
   if (keepTimeEvent(record.timestamp)) {
     events.push({
@@ -423,7 +425,8 @@ function aggregateRecord(record, dailyMap, wmMap, pricingData, events) {
       workspaceLabel: record.workspaceLabel,
       model,
       tokens,
-      cost: costUSD
+      cost: costUSD,
+      costBasis: !useEstimate && costUSD > 0 ? 'recorded' : undefined
     });
   }
 

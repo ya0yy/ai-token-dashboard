@@ -110,7 +110,7 @@ export async function checkDatabase(add, { device = hostname(), input } = {}) {
     // Probe required columns without schema initialization or full-table scans.
     const columns = {
       daily_usage: 'device, source, usage_date, model, total_tokens, cost_usd, cost_basis, pricing_version',
-      time_usage: 'device, source, event_key, event_time, project_path, session_id, cost_basis, pricing_version',
+      time_usage: 'device, source, event_key, event_time, project_path, session_id, provider, pricing_time, cost_basis, pricing_version',
       session_usage: 'device, source, session_id, total_tokens, cost_usd',
       collection_runs: 'id, device, source, status, collected_at',
       collection_checkpoints: 'scope_key, state_json'

@@ -14,7 +14,8 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { canonicalProvider, inferProviderFromModel } from './collectors/utils.mjs';
+import { canonicalProvider, inferProviderFromModel, normalizeModelForGrouping } from './collectors/utils.mjs';
+import { zonedParts } from './timezone.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -63,6 +64,8 @@ const CURSOR_OVERRIDES = {
 
 let _pricingData = null; // { fetchedAt: number, data: object } | null
 const _lookupCacheByDataset = new WeakMap();
+const _policyIndexes = new WeakMap();
+export const priceFields = ['input', 'output', 'cacheRead', 'cacheWrite'];
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -161,8 +164,56 @@ async function preserveRetiredPricing(path, fresh) {
  * @param {{ tiered?: boolean }} [options]  Set tiered=false when tokens are already aggregated
  * @returns {number}  Cost in USD (0 if model unknown)
  */
-export function hasModelPricing(model, pricingData, provider = null) {
-  return lookupPricingCached(model, pricingData, provider) != null;
+export function hasModelPricing(model, pricingData, provider = null, options = {}) {
+  return resolveRates(model, pricingData, provider, options.eventTime) != null;
+}
+
+function customRates(model, policy, provider, eventTime) {
+  if (!policy) return null;
+  if (!_policyIndexes.has(policy)) {
+    _policyIndexes.set(policy, {
+      defaults: new Map(policy.defaults.map(row => [normalizeModelForGrouping(row.model), row.rates])),
+      rules: new Map(policy.rules.filter(row => row.enabled)
+        .map(row => [JSON.stringify([row.provider, normalizeModelForGrouping(row.model)]), row]))
+    });
+  }
+  const index = _policyIndexes.get(policy);
+  const id = normalizeModelForGrouping(model);
+  // 渠道使用日志中的 ID，避免把 Vertex、Anthropic 等渠道合并。
+  const rule = typeof provider === 'string' && index.rules.get(JSON.stringify([provider.trim(), id]));
+  if (rule && eventTime != null) {
+    const local = zonedParts(eventTime, policy.timeZone, true);
+    if (local && (!rule.effectiveFrom || local.date >= rule.effectiveFrom)) {
+      const minute = local.hour * 60 + local.minute;
+      const start = clockMinute(rule.offPeakStart), end = clockMinute(rule.offPeakEnd);
+      const offPeak = start < end ? minute >= start && minute < end : minute >= start || minute < end;
+      return offPeak ? rule.offPeak : rule.peak;
+    }
+  }
+  return index.defaults.get(id) ?? null;
+}
+
+function clockMinute(time) {
+  const [hour, minute] = time.split(':').map(Number);
+  return hour * 60 + minute;
+}
+
+function resolveRates(model, pricingData, provider, eventTime) {
+  const rates = customRates(model, pricingData?.policy, provider, eventTime);
+  if (rates) return Object.fromEntries(priceFields.map(key => [key, rates[key] / 1_000_000]));
+  return lookupPricingCached(model, pricingData, pricingData?.policy ? null : provider);
+}
+
+export function defaultPriceTable(catalog) {
+  const { litellm, openrouter } = splitPricingData(catalog);
+  const models = new Set([...Object.keys(litellm || {}), ...Object.keys(openrouter || {}), ...Object.keys(CURSOR_OVERRIDES)]);
+  // 价格表展示目录条目。模糊匹配只用于日志里的模型别名。
+  return [...models].filter(model => !isExcluded(model) && model !== 'sample_spec').sort().flatMap(model => {
+    const rates = choosePricingHit(litellmEntryToRates(litellm?.[model]), litellmEntryToRates(openrouter?.[model]))
+      ?? (Object.hasOwn(CURSOR_OVERRIDES, model) ? CURSOR_OVERRIDES[model] : null);
+    return rates ? [{ model, rates: Object.fromEntries(priceFields.map(key => [key, validPrice(rates[key]) * 1_000_000])),
+      source: '内置目录' }] : [];
+  });
 }
 
 export function pricingSnapshotTime() {
@@ -171,7 +222,7 @@ export function pricingSnapshotTime() {
 
 export function calculateCost(model, tokens, pricingData, provider = null, options = {}) {
   const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, reasoning = 0 } = tokens;
-  const p = lookupPricingCached(model, pricingData, provider);
+  const p = resolveRates(model, pricingData, provider, options.eventTime);
   if (!p) return 0;
 
   if (options.tiered === false) {
@@ -393,7 +444,7 @@ function findInOpenRouter(id, data) {
 
 function splitPricingData(pricingData) {
   if (!pricingData) return {};
-  if (pricingData.litellm || pricingData.openrouter) return pricingData;
+  if (Object.hasOwn(pricingData, 'litellm') || Object.hasOwn(pricingData, 'openrouter')) return pricingData;
   return { litellm: pricingData };
 }
 
