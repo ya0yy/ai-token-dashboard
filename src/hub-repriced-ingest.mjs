@@ -1,7 +1,7 @@
 import { batchUpsertDaily, fromStored, tokenFields } from './db-batch.mjs';
+import { readReportedEvents, readUsageDayTotals } from './hub-ingest-pricing.mjs';
 import { exactColumn } from './sync-journal.mjs';
 import { rowKey } from './usage-store.mjs';
-import { summarizeEventCosts } from './reprice-plan.mjs';
 
 function sameTokens(a, b) {
   return tokenFields.every(field => Number(a[field] ?? 0) === Number(b[field] ?? 0));
@@ -16,19 +16,20 @@ function preservedCost(row, old) {
 export async function preserveHubRepricing(db, scopes, daily, time) {
   const oldDays = new Map();
   const oldEvents = new Map();
+  const scopeKey = row => JSON.stringify([row.device, row.source]);
+  const protectedScopes = new Set();
   for (const scope of scopes) {
     const where = `${exactColumn(db, 'device')} = ? AND ${exactColumn(db, 'source')} = ? AND hub_repriced = 1`;
     const params = [scope.device, scope.source];
     const storedDays = await db.all(`SELECT * FROM daily_usage WHERE ${where}`, params);
+    if (storedDays.length) protectedScopes.add(scopeKey(scope));
     for (const row of storedDays) {
       const day = fromStored('daily', row);
       oldDays.set(rowKey('daily', day), day);
     }
-    if (!storedDays.length || !time.length) continue;
-    for (const row of await db.all(`SELECT * FROM time_usage WHERE ${where}`, params)) {
-      const event = fromStored('time', row);
-      oldEvents.set(rowKey('time', event), event);
-    }
+  }
+  for (const event of await readReportedEvents(db, time.filter(row => protectedScopes.has(scopeKey(row))))) {
+    if (event.hubRepriced) oldEvents.set(rowKey('time', event), event);
   }
 
   const affected = new Set();
@@ -54,17 +55,17 @@ export async function preserveHubRepricing(db, scopes, daily, time) {
 
 export async function reconcileHubRepricing(db, affected) {
   const updates = [];
+  const totals = await readUsageDayTotals(db, affected.map(day => rowKey('daily', day)));
   for (const day of affected) {
     const where = ['device', 'source', 'usage_date', 'model'].map(column => `${exactColumn(db, column)} = ?`).join(' AND ');
     const params = [day.device, day.source, day.usageDate, day.model];
     const stored = await db.get(`SELECT * FROM daily_usage WHERE ${where}`, params);
     if (!stored) continue;
     const summary = fromStored('daily', stored);
-    const events = (await db.all(`SELECT * FROM time_usage WHERE ${where}`, params)).map(row => fromStored('time', row));
-    if (!events.length) continue;
+    const detail = totals.get(rowKey('daily', day));
+    if (!detail) continue;
     // 同步可能先写日汇总、再分批写明细。明细到齐前保留旧金额。
-    const totals = Object.fromEntries(tokenFields.map(field => [field, events.reduce((sum, row) => sum + Number(row[field]), 0)]));
-    if (sameTokens(totals, summary)) updates.push({ ...summary, ...summarizeEventCosts(events) });
+    if (sameTokens(detail.tokens, summary)) updates.push({ ...summary, ...detail.cost });
   }
   await batchUpsertDaily(db, updates);
 }

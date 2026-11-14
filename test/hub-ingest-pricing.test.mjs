@@ -119,6 +119,28 @@ test('Hub 补录旧日汇总的调用时保留原有日费用', { timeout: 20_00
   assert.equal((await readSnapshot(db)).daily[0].costUSD, 1.5);
 });
 
+test('Hub 在受限堆内存下给已有大量明细的日汇总追加用量', { timeout: 30_000 }, async t => {
+  const hub = await startServer({ NODE_OPTIONS: '--max-old-space-size=64' });
+  const db = await openDb(join(hub.root, 'usage.sqlite'));
+  t.after(async () => { await db.close(); await hub.close(); });
+  await publish(hub);
+  const count = 100_000;
+  await db.run(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+    INSERT INTO time_usage (device, source, event_key, event_time, usage_date, model, project_path,
+      input_tokens, total_tokens, cost_usd, cost_basis, pricing_version, hub_repriced, updated_at)
+    SELECT ?, ?, 'existing-' || n, ?, ?, ?, '/project/' || hex(randomblob(160)),
+      10, 10, 0.001, 'estimated', 'original', 1, CURRENT_TIMESTAMP FROM seq`,
+  [count, scope.device, scope.source, call('new').eventTime, usageDate, model]);
+  await post(hub, '/api/ingest', { pricing: 'hub', time: [call('new')] }, 'PUT');
+  const stored = await db.get('SELECT total_tokens, cost_usd, pricing_version FROM daily_usage');
+  assert.equal(stored.total_tokens, count * 10 + 1_000_000);
+  assert.ok(Math.abs(stored.cost_usd - 110) < 1e-8);
+  assert.equal(stored.pricing_version, null);
+  await post(hub, '/api/ingest', { time: [call('new', { costUSD: 999 })] });
+  assert.equal((await db.get("SELECT cost_usd FROM time_usage WHERE event_key = 'new'")).cost_usd, 10);
+  assert.equal((await db.get('SELECT cost_usd FROM daily_usage')).cost_usd, stored.cost_usd);
+});
+
 test('有同步进度的采集器升级后补传日汇总并沿用原同步目标', { timeout: 20_000 }, async t => {
   const hub = await startServer();
   const db = await openDb(join(hub.root, 'usage.sqlite'), { readOnly: true });
