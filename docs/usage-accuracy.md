@@ -207,7 +207,8 @@ a transactional migration marker; it does not recalculate historical fees.
 - `GET /api/pricing` returns the model defaults, policy and version.
   `PUT /api/pricing` saves the policy with the dashboard credential.
   `POST /api/pricing/reprice` uses the dashboard credential and previews the
-  inclusive `start` and `end` dates. Optional `model` selects an exact model ID.
+  inclusive `start` and `end` dates. Optional `model` selects a model ID.
+  `deepseek/deepseek-v4.1-flash-1017` and `deepseek-v4.1-flash-1017` select the same usage.
   `recoverLegacyPiZero: true` requires a model ID and limits the operation to
   eligible Pi Agent zero amounts. Submit the same filters with the returned
   `previewId` to apply the changes.

@@ -97,3 +97,41 @@ test('重算预览按日期读取明细，长历史和低内存下仍可预览�
   assert.equal((await db.get("SELECT COUNT(*) AS n FROM time_usage WHERE usage_date = '2026-08-01'")).n, 100001);
   assert.equal((await db.get('SELECT cost_usd FROM session_usage')).cost_usd, 1 + preview.costAfter);
 });
+
+test('历史重算的目录模型 ID 和采集模型 ID 匹配相同用量', { timeout: 20_000 }, async t => {
+  const hub = await startServer();
+  t.after(() => hub.close());
+  const model = 'deepseek-v4.1-flash-1017';
+  const alias = `deepseek/${model}`;
+  const daily = [model, alias, 'other-model'].map(id => usage({ model: id, costBasis: 'estimated' }));
+  const time = daily.map(day => event({ ...day, eventKey: day.model }));
+  assert.equal((await hub.ingest({ daily, time })).status, 200);
+
+  const send = (path, body, method = 'POST') => fetch(hub.base + path, {
+    method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000)
+  });
+  const rates = { input: 100, output: 0, cacheRead: 0, cacheWrite: 0 };
+  assert.equal((await send('/api/pricing', {
+    timeZone: 'UTC', defaults: daily.map(row => ({ model: row.model, rates })), rules: []
+  }, 'PUT')).status, 200);
+  const range = { start: daily[0].usageDate, end: daily[0].usageDate };
+  const previewIds = [];
+  for (const id of [model, alias]) {
+    const result = await send('/api/pricing/reprice', { ...range, model: id });
+    assert.equal(result.status, 200);
+    const preview = await result.json();
+    assert.equal(preview.counts.time, 2);
+    assert.equal(preview.costBefore, 2);
+    assert.equal(preview.costAfter, 0.02);
+    previewIds.push(preview.previewId);
+  }
+  assert.equal(previewIds[0], previewIds[1]);
+  const applied = await send('/api/pricing/reprice', { ...range, model: alias, previewId: previewIds[0] });
+  assert.equal(applied.status, 200);
+  const db = await openDb(join(hub.root, 'usage.sqlite'), { readOnly: true });
+  t.after(() => db.close());
+  const { time: stored } = await readSnapshot(db);
+  assert.deepEqual(Object.fromEntries(stored.map(row => [row.model, row.costUSD])), {
+    [model]: 0.01, [alias]: 0.01, 'other-model': 1
+  });
+});

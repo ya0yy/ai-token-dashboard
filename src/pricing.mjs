@@ -169,10 +169,19 @@ export function hasModelPricing(model, pricingData, provider = null, options = {
   return resolveRates(model, pricingData, provider, options.eventTime) != null;
 }
 
+// 目录使用发布者前缀，Pi 日志里的同款模型使用裸 ID。
+const deepSeekFlashModel = 'deepseek-v4.1-flash-1017';
+const deepSeekFlashAlias = `deepseek/${deepSeekFlashModel}`;
+
 export function pricingRuleModel(model) {
   const id = normalizeModelForGrouping(model);
-  // 目录使用发布者前缀，Pi 日志里的同款模型使用裸 ID。
-  return id === 'deepseek/deepseek-v4.1-flash-1017' ? id.slice('deepseek/'.length) : id;
+  return id === deepSeekFlashAlias ? deepSeekFlashModel : id;
+}
+
+export function pricingRuleModelIds(model) {
+  return pricingRuleModel(model) === deepSeekFlashModel
+    ? [...new Set([deepSeekFlashModel, deepSeekFlashAlias, model])]
+    : [model];
 }
 
 function customRates(model, policy, provider, eventTime) {

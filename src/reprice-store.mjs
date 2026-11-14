@@ -9,6 +9,7 @@ import { digest, exactColumn } from './sync-journal.mjs';
 import { rowKey, writeSnapshot } from './usage-store.mjs';
 import { backupSnapshotPages } from './usage-backup.mjs';
 import { addProjectCostChanges, planReprice, updateLegacySessions } from './reprice-plan.mjs';
+import { pricingRuleModelIds } from './pricing.mjs';
 
 const dateColumn = 'usage_date';
 const pageSize = 1000;
@@ -17,10 +18,15 @@ function usageFilter(db, options, scope) {
   const where = [`${dateColumn} >= ?`, `${dateColumn} <= ?`];
   const params = [options.start, options.end];
   for (const [key, value] of Object.entries({ device: scope?.device ?? options.device,
-    source: scope?.source ?? options.source, model: options.model })) {
+    source: scope?.source ?? options.source })) {
     if (!value) continue;
     where.push(`${exactColumn(db, key)} = ?`);
     params.push(value);
+  }
+  if (options.model) {
+    const ids = pricingRuleModelIds(options.model);
+    where.push(`${exactColumn(db, 'model')} IN (${ids.map(() => '?').join(', ')})`);
+    params.push(...ids);
   }
   return { where: where.join(' AND '), params };
 }
@@ -141,7 +147,8 @@ export async function repriceUsage(db, pricing, options) {
         }
       }
 
-      const id = digest([pricing.version, options.start, options.end, options.model, options.recoverLegacyPiZero, options.fallbackProvider,
+      const models = options.model ? pricingRuleModelIds(options.model) : null;
+      const id = digest([pricing.version, options.start, options.end, models, options.recoverLegacyPiZero, options.fallbackProvider,
         skipped, costBefore, costAfter, signatures.digest('hex')]);
       if (previewId && id !== previewId) {
         throw Object.assign(new Error('价格或用量已变化，请重新预览后再执行'), { status: 409 });

@@ -1,5 +1,5 @@
 import { tokenFields } from './db-batch.mjs';
-import { calculateCost, hasModelPricing } from './pricing.mjs';
+import { calculateCost, hasModelPricing, pricingRuleModelIds } from './pricing.mjs';
 import { rowKey } from './usage-store.mjs';
 
 const dayKey = row => JSON.stringify([row.device, row.source, row.usageDate, row.model]);
@@ -122,6 +122,7 @@ function planLegacySessions(previous, changes, skipped) {
 /** 以完整日汇总为单位重算，让调用明细与看板总额一起提交。 */
 export function planReprice(previous, pricingData, { start, end, model, recoverLegacyPiZero = false, fallbackProvider } = {}) {
   const buckets = group(previous.time, dayKey);
+  const models = model ? new Set(pricingRuleModelIds(model)) : null;
   const changed = new Map();
   const daily = [];
   const skipped = { incompleteDetail: 0, costMismatch: 0, recordedDay: 0, noEligibleEvents: 0, incompleteSession: 0 };
@@ -129,7 +130,7 @@ export function planReprice(previous, pricingData, { start, end, model, recoverL
   let costAfter = 0;
 
   for (const row of previous.daily) {
-    if ((start && row.usageDate < start) || (end && row.usageDate > end) || (model && row.model !== model)) continue;
+    if ((start && row.usageDate < start) || (end && row.usageDate > end) || (models && !models.has(row.model))) continue;
     if (recoverLegacyPiZero && row.source !== 'Pi Agent') continue;
     const detail = buckets.get(dayKey(row)) || [];
     if (!fullTokens(row, detail)) { skipped.incompleteDetail++; continue; }
