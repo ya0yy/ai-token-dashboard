@@ -49,7 +49,7 @@ try {
   finally { backupReader.close(); }
   const before = history(backup);
   const upgraded = before.map((rows, index) => {
-    if (tables[index] === 'time_usage') return rows.map(row => ({ ...row, provider: null, pricing_time: null, hub_repriced: 0 }));
+    if (tables[index] === 'time_usage') return rows.map(row => ({ ...row, provider: null, pricing_time: null, billed_cost_usd: null, hub_repriced: 0 }));
     if (tables[index] === 'daily_usage') return rows.map(row => ({ ...row, hub_repriced: 0 }));
     return rows;
   });

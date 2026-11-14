@@ -56,7 +56,8 @@ export function reconcileSnapshot(previous, incoming, { pricingData = null, full
       const confirmed = row.costBasis === 'recorded' && row.costUSD === old.costUSD;
       const correctedEstimate = old.costBasis === 'recorded' && row.logEstimateUSD === old.costUSD;
       return { ...row, provider: row.provider ?? old.provider, pricingTime: row.pricingTime ?? old.pricingTime, hubRepriced: old.hubRepriced,
-        costUSD: old.costUSD, costBasis: correctedEstimate ? 'estimated' : confirmed ? 'recorded' : old.costBasis,
+        costUSD: old.costUSD, billedCostUSD: row.billedCostUSD ?? old.billedCostUSD,
+        costBasis: correctedEstimate ? 'estimated' : confirmed ? 'recorded' : old.costBasis,
         pricingVersion: confirmed || correctedEstimate ? null : old.pricingVersion };
     }
     if (row.costBasis === 'recorded' && row.costUSD >= old.costUSD) return row;

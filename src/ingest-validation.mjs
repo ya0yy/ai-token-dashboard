@@ -21,7 +21,11 @@ export function validateIngest(payload, { maxRows = 100_000 } = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Expected an object');
   const mode = payload.mode ?? 'incremental';
   if (!['incremental', 'full'].includes(mode)) throw new Error('Invalid mode');
-  const result = { mode };
+  if (payload.pricing != null && payload.pricing !== 'hub') throw new Error('Invalid pricing mode');
+  if (payload.pricing === 'hub' && (payload.daily?.length || payload.sessions?.length)) {
+    throw new Error('Hub 计价上报仅接受调用明细');
+  }
+  const result = { mode, pricing: payload.pricing ?? null };
   for (const kind of ['daily', 'time', 'sessions', 'runs', 'scopes']) {
     const rows = payload[kind] ?? [];
     if (!Array.isArray(rows) || rows.length > maxRows) throw new Error(`Invalid ${kind} array`);
@@ -40,6 +44,8 @@ export function validateIngest(payload, { maxRows = 100_000 } = {}) {
         if (row[key] != null && (!Number.isSafeInteger(row[key]) || row[key] < 0)) throw new Error(`Invalid ${key}`);
       }
       if (row.costUSD != null && (typeof row.costUSD !== 'number' || !Number.isFinite(row.costUSD) || row.costUSD < 0)) throw new Error('Invalid costUSD');
+      if (row.billedCostUSD != null && (kind !== 'time' || typeof row.billedCostUSD !== 'number'
+        || !Number.isFinite(row.billedCostUSD) || row.billedCostUSD < 0)) throw new Error('Invalid billedCostUSD');
       if (row.costBasis != null && !['legacy_unknown', 'estimated', 'recorded', 'mixed', 'unknown'].includes(row.costBasis)) throw new Error('Invalid costBasis');
       text(row.pricingVersion, 'pricingVersion', { optional: true, max: 64 });
       if (row.hubRepriced != null && ![0, 1].includes(row.hubRepriced)) throw new Error('Invalid hubRepriced');
@@ -58,8 +64,10 @@ export function validateIngest(payload, { maxRows = 100_000 } = {}) {
         if (row.lastActivity != null) timestamp(row.lastActivity, 'lastActivity');
       }
       if (kind !== 'time') return { ...row };
-      return { ...row, eventTime: new Date(row.eventTime).toISOString(),
-        pricingTime: row.pricingTime == null ? null : new Date(row.pricingTime).toISOString() };
+      const eventTime = new Date(row.eventTime).toISOString();
+      const pricingTime = result.pricing === 'hub' && row.pricingTime === undefined ? eventTime
+        : row.pricingTime == null ? null : new Date(row.pricingTime).toISOString();
+      return { ...row, eventTime, pricingTime };
     });
   }
   // Full replacement must name its scope, including sources whose replacement

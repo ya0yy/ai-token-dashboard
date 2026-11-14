@@ -29,8 +29,32 @@ export function summarizeEventCosts(events) {
     pricingVersion: versions.size === 1 ? versions.values().next().value : null };
 }
 
-function repriceEvent(row, pricingData) {
-  if (row.costBasis !== 'estimated' && !(row.costBasis === 'unknown' && Number(row.costUSD) === 0)) return null;
+// 旧版 Pi 把日志估价写成了 recorded，且没有保存实际账单字段。
+export function isLegacyPiZero(row) {
+  return row.source === 'Pi Agent' && row.costBasis === 'recorded' && Number(row.costUSD) === 0
+    && row.billedCostUSD == null && row.pricingVersion == null && row.pricingTime == null;
+}
+
+export function priceUsageEvent(row, pricingData, eventTime) {
+  const tokens = {
+    input: Number(row.inputTokens ?? 0), output: Number(row.outputTokens ?? 0),
+    cacheRead: Number(row.cacheReadTokens ?? 0), cacheWrite: Number(row.cacheCreationTokens ?? 0),
+    reasoning: /^Codex CLI(?: \(JS\))?$/.test(row.source) ? 0 : Number(row.reasoningOutputTokens ?? 0)
+  };
+  if (Object.values(tokens).reduce((a, b) => a + b, 0) !== Number(row.totalTokens)) return null;
+  const options = { eventTime, tiered: row.source !== 'Grok CLI' && eventTime != null };
+  if (!hasModelPricing(row.model, pricingData, row.provider, options)) return null;
+  const costUSD = calculateCost(row.model, tokens, pricingData, row.provider, options);
+  if (!Number.isFinite(costUSD) || costUSD < 0) return null;
+  return { costUSD, costBasis: 'estimated', pricingVersion: pricingData.version ?? null };
+}
+
+function repriceEvent(row, pricingData, recoverLegacyPiZero) {
+  const recover = recoverLegacyPiZero && isLegacyPiZero(row);
+  if (recoverLegacyPiZero && !(recover || row.source === 'Pi Agent' && row.costBasis === 'estimated'
+    && Number(row.costUSD) === 0 && row.pricingVersion == null)) return null;
+  if (row.billedCostUSD != null || !recover && row.costBasis !== 'estimated'
+    && !(row.costBasis === 'unknown' && Number(row.costUSD) === 0)) return null;
 
   // 旧 OpenClaw 时间可能来自文件，会话起点也无法用于 Hermes 逐笔计价。
   // 旧 OpenCode 和 Claude Code 的估算标记无法排除工具原有费用。
@@ -39,19 +63,10 @@ function repriceEvent(row, pricingData) {
   const eventTime = row.pricingTime ?? (needsPricingTime ? null : row.eventTime);
   if (!eventTime || !Number.isFinite(Date.parse(eventTime))) return null;
 
-  const tokens = {
-    input: Number(row.inputTokens), output: Number(row.outputTokens),
-    cacheRead: Number(row.cacheReadTokens), cacheWrite: Number(row.cacheCreationTokens),
-    reasoning: /^Codex CLI(?: \(JS\))?$/.test(row.source) ? 0 : Number(row.reasoningOutputTokens)
-  };
-  if (Object.values(tokens).reduce((a, b) => a + b, 0) !== Number(row.totalTokens)) return null;
-  const options = { eventTime, tiered: row.source !== 'Grok CLI' };
-  if (!hasModelPricing(row.model, pricingData, row.provider, options)) return null;
-  const costUSD = calculateCost(row.model, tokens, pricingData, row.provider, options);
-  if (!Number.isFinite(costUSD) || costUSD < 0) return null;
-  const pricingVersion = pricingData.version ?? null;
-  if (row.costBasis === 'estimated' && Number(row.costUSD) === costUSD && row.pricingVersion === pricingVersion) return null;
-  return { ...row, costUSD, costBasis: 'estimated', pricingVersion };
+  const price = priceUsageEvent(row, pricingData, eventTime);
+  if (!price || row.costBasis === 'estimated' && Number(row.costUSD) === price.costUSD
+    && row.pricingVersion === price.pricingVersion) return null;
+  return { ...row, ...price };
 }
 
 function updateLegacySessions(sessions, events, changed, skipped) {
@@ -80,7 +95,7 @@ function updateLegacySessions(sessions, events, changed, skipped) {
 }
 
 /** 以完整日汇总为单位重算，让调用明细与看板总额一起提交。 */
-export function planReprice(previous, pricingData, { start, end, model } = {}) {
+export function planReprice(previous, pricingData, { start, end, model, recoverLegacyPiZero = false } = {}) {
   const buckets = group(previous.time, dayKey);
   const changed = new Map();
   const daily = [];
@@ -90,12 +105,15 @@ export function planReprice(previous, pricingData, { start, end, model } = {}) {
 
   for (const row of previous.daily) {
     if ((start && row.usageDate < start) || (end && row.usageDate > end) || (model && row.model !== model)) continue;
+    if (recoverLegacyPiZero && row.source !== 'Pi Agent') continue;
     const detail = buckets.get(dayKey(row)) || [];
     if (!fullTokens(row, detail)) { skipped.incompleteDetail++; continue; }
     if (!sameAmount(Number(row.costUSD), sum(detail, 'costUSD'))) { skipped.costMismatch++; continue; }
-    if (row.costBasis === 'recorded') { skipped.recordedDay++; continue; }
+    if (row.costBasis === 'recorded' && !(recoverLegacyPiZero && detail.some(isLegacyPiZero))) {
+      skipped.recordedDay++; continue;
+    }
     for (const event of detail) {
-      const next = repriceEvent(event, pricingData);
+      const next = repriceEvent(event, pricingData, recoverLegacyPiZero);
       if (next) changed.set(event, next);
     }
     if (!detail.some(event => changed.has(event))) { skipped.noEligibleEvents++; continue; }

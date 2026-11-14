@@ -128,7 +128,30 @@ try {
   await chartPage.locator('.donut-wrap').scrollIntoViewIfNeeded();
   await chartPage.locator('canvas').first().waitFor();
   await chartPage.close();
-  console.log('Browser smoke passed: timezone, config retry, stale response, precise summary, detail pagination/retry, CSV, mobile, review, chart recovery.');
+
+  const legacy = usage({ source: 'Pi Agent', usageDate: '2026-10-27', model: 'deepseek-v4.1-flash-1017',
+    costBasis: 'recorded', costUSD: 0 });
+  assert.equal((await app.ingest({ daily: [legacy], time: [event({ ...legacy, eventTime: '2026-10-27T12:00:00Z' })] })).status, 200);
+  const saved = await fetch(app.base + '/api/pricing', { method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ timeZone: 'Asia/Shanghai', rules: [],
+      defaults: [{ model: legacy.model, rates: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 } }] }),
+    signal: AbortSignal.timeout(5000) });
+  assert.equal(saved.status, 200);
+  const pricing = await browser.newPage();
+  pricing.setDefaultTimeout(15_000);
+  await pricing.route('https://fonts.**', route => route.abort());
+  await pricing.goto(app.base + '/pricing');
+  await pricing.getByLabel('开始日期').fill(legacy.usageDate);
+  await pricing.getByLabel('结束日期').fill(legacy.usageDate);
+  await pricing.getByLabel('仅补算旧版 Pi Agent 的零金额').check();
+  assert.equal(await pricing.getByRole('button', { name: '预览差额' }).isDisabled(), true);
+  await pricing.getByLabel('模型 ID', { exact: true }).last().fill(legacy.model);
+  await pricing.getByRole('button', { name: '预览差额' }).click();
+  await pricing.getByText('+$0.10', { exact: true }).waitFor();
+  await pricing.getByRole('button', { name: '确认重算' }).click();
+  await pricing.getByRole('status').filter({ hasText: '重算完成' }).waitFor();
+  await pricing.close();
+  console.log('Browser smoke passed: timezone, config retry, stale response, precise summary, detail pagination/retry, CSV, mobile, review, chart recovery, pricing preview and apply.');
 } finally {
   await browser?.close();
   await app.close();

@@ -199,6 +199,7 @@ function clockMinute(time) {
 }
 
 function resolveRates(model, pricingData, provider, eventTime) {
+  if (!pricingData) return null;
   const rates = customRates(model, pricingData?.policy, provider, eventTime);
   if (rates) return Object.fromEntries(priceFields.map(key => [key, rates[key] / 1_000_000]));
   return lookupPricingCached(model, pricingData, pricingData?.policy ? null : provider);

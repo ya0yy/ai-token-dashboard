@@ -225,6 +225,7 @@ export async function collectSessions(pricingData, { roots, client, omp = false 
         client, eventKey, eventTime: new Date(time).toISOString(), usageDate: date,
         sessionId: session.sessionId, workspaceKey: workspace, workspaceLabel: workspace,
         model, provider, pricingTime, tokens, cost,
+        ...(record.logCostBasis === 'recorded' ? { billedCostUSD: record.recordedCost } : {}),
         costBasis: useEstimate ? undefined : record.logCostBasis,
         ...(useEstimate ? {} : { pricingVersion: null }),
         ...(record.logCostBasis === 'estimated' ? { logEstimateUSD: record.recordedCost } : {})

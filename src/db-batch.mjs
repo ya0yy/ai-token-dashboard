@@ -15,7 +15,8 @@ export const TABLES = {
   time: { table: 'time_usage', keys: ['device', 'source', 'event_key'], fields: [
     ['device', 'device'], ['source', 'source'], ['event_key', 'eventKey'], ['event_time', 'eventTime'],
     ['usage_date', 'usageDate'], ['model', 'model', ''], ['provider', 'provider', null], ['pricing_time', 'pricingTime', null],
-    ['project_path', 'projectPath', null], ['session_id', 'sessionId', null], ...usage, ...cost, ['hub_repriced', 'hubRepriced', 0]
+    ['project_path', 'projectPath', null], ['session_id', 'sessionId', null], ...usage, ...cost,
+    ['billed_cost_usd', 'billedCostUSD', null], ['hub_repriced', 'hubRepriced', 0]
   ] },
   sessions: { table: 'session_usage', keys: ['device', 'source', 'session_id'], fields: [
     ['device', 'device'], ['source', 'source'], ['session_id', 'sessionId'], ['last_activity', 'lastActivity', null],

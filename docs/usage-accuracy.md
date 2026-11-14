@@ -120,12 +120,18 @@ database and pass `--push` and `--token` to sync the result to its hub.
 
 ## Synchronization
 
-The first `--push` sends a baseline of locally stored history. Later pushes read
+The first `--push` sends a baseline of locally stored calls. Later pushes read
 transactional change records in `sync_changes`, not a full usage snapshot or
 per-row history manifest. Progress in `sync_targets` is isolated by destination,
 device and source, and advances only after every chunk for that scope is
 acknowledged. A failed chunk or lost response leaves that scope retryable;
 replayed upserts do not duplicate usage or generate another change revision.
+
+New collectors use `PUT /api/ingest` with `pricing: "hub"`, sending call
+details and optional `billedCostUSD` for confirmed charges. The hub updates its
+daily totals from call details and applies the published pricing snapshot to
+new calls. Upgrade the hub before the collectors. Older clients continue to use
+`POST /api/ingest` and can still send daily and session summaries with amounts.
 
 Usage writes and change records commit together across collection, HTTP ingest,
 migration, pricing repair and restore. Repeated edits retain only the newest
@@ -194,7 +200,9 @@ a transactional migration marker; it does not recalculate historical fees.
 - `GET /api/pricing` returns the model defaults, policy and version.
   `PUT /api/pricing` saves the policy with the dashboard credential.
   `POST /api/pricing/reprice` uses the dashboard credential and previews the
-  inclusive `start` and `end` dates. Submit the same range with the returned
+  inclusive `start` and `end` dates. Optional `model` selects an exact model ID.
+  `recoverLegacyPiZero: true` requires a model ID and limits the operation to
+  eligible Pi Agent zero amounts. Submit the same filters with the returned
   `previewId` to apply the changes.
   `GET /api/pricing/snapshot` uses the ingest credential and returns the
   versioned policy and catalog used by collectors.

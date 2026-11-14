@@ -28,19 +28,18 @@ const COLLECTORS = [
 const args = parseArgs(process.argv.slice(2));
 const device = args.device || hostname();
 const preview = args.full && !args.apply || args.dryRun;
-const pricingData = await loadCollectionPricing(args);
+const pricingData = args.push ? null : await loadCollectionPricing(args);
 const db = await openDb(args.db, { readOnly: Boolean(preview) });
-// A rebuild requires the complete source history. Do not delete old events just
-// because the normal collector has a recent-event retention window.
-if (args.full) process.env.TIME_USAGE_HISTORY_DAYS = 'Infinity';
+// Hub 依赖逐笔调用生成日汇总。全量替换也必须使用完整明细。
+if (args.full || args.push) process.env.TIME_USAGE_HISTORY_DAYS = 'Infinity';
 const collection = { collectedAt: new Date().toISOString(), scopes: [] };
 
 try {
   await collectLocal();
   if (args.push && !preview) {
     const result = await syncDatabase({ db, url: args.push, token: args.token, device, source: args.source,
-      full: Boolean(args.full), resync: Boolean(args.resync), scopes: collection.scopes });
-    console.log(`[push] ${JSON.stringify(result)}`);
+      full: Boolean(args.full), resync: Boolean(args.resync), scopes: collection.scopes, hubPricing: true });
+    console.log(`[用量上报] 由 Hub 入库计价，请求数: ${result.requests}，调用数: ${result.rows.time}`);
   }
 } finally { await db.close(); }
 
@@ -155,8 +154,9 @@ function normalizeTimeRows(json, deviceName) {
       reasoningOutputTokens: tokens.reasoning,
       totalTokens,
       costUSD: entry.cost || 0,
+      billedCostUSD: entry.billedCostUSD ?? null,
       costBasis: entry.costBasis || (hasModelPricing(model, pricingData, provider, { eventTime: pricingTime || null }) ? 'estimated' : 'unknown'),
-      pricingVersion: entry.costBasis === 'recorded' ? null : entry.pricingVersion === null ? null : pricingData.version,
+      pricingVersion: entry.costBasis === 'recorded' || entry.pricingVersion === null ? null : pricingData?.version ?? null,
       ...(entry.logEstimateUSD != null ? { logEstimateUSD: entry.logEstimateUSD } : {})
     };
   }).filter(row => row.eventTime && row.usageDate && row.totalTokens > 0);
@@ -194,7 +194,7 @@ function normalizeDailyRows(json, deviceName) {
         totalTokens: tokenTotal(tokens, entry.client),
         costUSD: entry.cost || 0,
         costBasis: 'unknown',
-        pricingVersion: pricingData.version
+        pricingVersion: pricingData?.version ?? null
       };
     });
   });

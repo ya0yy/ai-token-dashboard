@@ -174,6 +174,7 @@ export async function collect(pricingData = null) {
         provider: rawProvider,
         pricingTime: null,
         tokens,
+        ...(row.cost_basis === 'recorded' ? { billedCostUSD: originalCost } : {}),
         cost, costBasis: originalCost > 0 ? row.cost_basis : undefined
       });
     }

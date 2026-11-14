@@ -16,12 +16,14 @@ const skipReasons = [
 export function RepricePanel() {
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
+  const [model, setModel] = useState('');
+  const [recoverLegacyPiZero, setRecoverLegacyPiZero] = useState(false);
   const [result, setResult] = useState(null);
   const [pending, setPending] = useState('');
   const [error, setError] = useState('');
 
-  function updateDate(setDate, value) {
-    setDate(value);
+  function updateFilter(setValue, value) {
+    setValue(value);
     setResult(null);
     setError('');
   }
@@ -34,7 +36,7 @@ export function RepricePanel() {
       const response = await fetch('/api/pricing/reprice', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ start, end, previewId }),
+        body: JSON.stringify({ start, end, model: model.trim() || undefined, recoverLegacyPiZero, previewId }),
         signal: AbortSignal.timeout(60_000)
       });
       const data = await response.json();
@@ -56,14 +58,27 @@ export function RepricePanel() {
         <div className="reprice-dates">
           <label>开始日期
             <input type="date" required value={start} max={end || undefined} disabled={!!pending}
-              onChange={event => updateDate(setStart, event.target.value)} />
+              onChange={event => updateFilter(setStart, event.target.value)} />
           </label>
           <label>结束日期
             <input type="date" required value={end} min={start || undefined} disabled={!!pending}
-              onChange={event => updateDate(setEnd, event.target.value)} />
+              onChange={event => updateFilter(setEnd, event.target.value)} />
           </label>
-          <button className="btn" disabled={!!pending}>{pending === 'preview' ? '正在预览…' : '预览差额'}</button>
+          <label>模型 ID
+            <input type="text" value={model} maxLength={255} required={recoverLegacyPiZero} disabled={!!pending}
+              placeholder={recoverLegacyPiZero ? '输入完整模型 ID' : '留空为全部模型'}
+              onChange={event => updateFilter(setModel, event.target.value)} />
+          </label>
+          <button className="btn" disabled={!!pending || recoverLegacyPiZero && !model.trim()}>
+            {pending === 'preview' ? '正在预览…' : '预览差额'}
+          </button>
         </div>
+        <label className="pricing-checkbox">
+          <input type="checkbox" checked={recoverLegacyPiZero} disabled={!!pending}
+            onChange={event => updateFilter(setRecoverLegacyPiZero, event.target.checked)} />
+          仅补算旧版 Pi Agent 的零金额
+        </label>
+        {recoverLegacyPiZero && <p className="muted">旧日志未区分本地估算和实际零元账单。核实为本地估算后再启用。缺少供应商时使用模型默认价。</p>}
       </form>
       {error && <p className="pricing-error" role="alert">{error}</p>}
       {pending === 'apply' && <p role="status">正在备份并重算费用…</p>}

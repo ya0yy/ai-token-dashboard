@@ -27,6 +27,7 @@ import { requestCache } from './request-cache.mjs';
 import { normalizeModelForGrouping } from './collectors/utils.mjs';
 import { repriceUsage } from './reprice-store.mjs';
 import { preserveHubRepricing, reconcileHubRepricing } from './hub-repriced-ingest.mjs';
+import { prepareHubPricing, writeHubPricedDays } from './hub-ingest-pricing.mjs';
 
 // Live subscription-window quota is the one feature that makes outbound calls
 // (to the vendors' usage endpoints, using the OAuth token the CLIs stored
@@ -184,7 +185,7 @@ async function handleApi(req, url, res) {
     await handleQuota(res);
     return;
   }
-  if (url.pathname === '/api/ingest' && req.method === 'POST') {
+  if (url.pathname === '/api/ingest' && ['POST', 'PUT'].includes(req.method)) {
     await handleIngest(req, res);
     return;
   }
@@ -344,12 +345,14 @@ async function handleIngest(req, res) {
 
   try {
     const payload = validateIngest(await readJson(req));
+    if (req.method === 'PUT' && payload.pricing !== 'hub') throw new Error('新版用量上报缺少 Hub 计价标记');
     const dailyRows = Array.isArray(payload.daily) ? payload.daily : [];
     const timeRows = Array.isArray(payload.time) ? payload.time : [];
     const sessionRows = Array.isArray(payload.sessions) ? payload.sessions : [];
     const runRows = Array.isArray(payload.runs) ? payload.runs : [];
 
     const fullRebuild = payload.mode === 'full';
+    const pricing = payload.pricing === 'hub' ? await currentPricingSnapshot() : null;
 
     // 全量 push 携带设备完整时间窗,按 (device, source) 整体替换;
     // 增量 push 只含新事件,只做 upsert,绝不删表。
@@ -360,29 +363,41 @@ async function handleIngest(req, res) {
       }
     }
 
-    await db.transaction(async (tx) => {
+    const writtenDaily = await db.transaction(async (tx) => {
       const scopes = [...new Map([...payload.scopes, ...dailyRows, ...timeRows, ...sessionRows]
         .map(({ device, source }) => [JSON.stringify([device, source]), { device, source }])).values()];
       await invalidateCollectionState(tx, scopes);
-      const reconciled = await preserveHubRepricing(tx, scopes, dailyRows, timeRows);
+      const priced = pricing ? await prepareHubPricing(tx, timeRows, pricing) : null;
+      const reconciled = priced ? null : await preserveHubRepricing(tx, scopes, dailyRows, timeRows);
       for (const row of timePairs.values()) {
         for (const table of ['daily_usage', 'time_usage', 'session_usage']) {
           await tx.run(`DELETE FROM ${table} WHERE ${exactColumn(tx, 'device')} = ? AND ${exactColumn(tx, 'source')} = ?`, [row.device, row.source]);
         }
       }
       if (fullRebuild) await resetUsageChanges(tx, payload.scopes);
-      await batchUpsertDaily(tx, reconciled.daily);
-      await batchUpsertTimeUsage(tx, reconciled.time);
-      await reconcileHubRepricing(tx, reconciled.affected);
+      let dayCount = dailyRows.length;
+      if (priced) {
+        await batchUpsertTimeUsage(tx, priced.time);
+        dayCount = await writeHubPricedDays(tx, priced, fullRebuild);
+      } else {
+        await batchUpsertDaily(tx, reconciled.daily);
+        await batchUpsertTimeUsage(tx, reconciled.time);
+        await reconcileHubRepricing(tx, reconciled.affected);
+      }
       await batchUpsertSession(tx, sessionRows);
       for (const row of runRows) await recordRun(tx, row);
+      return dayCount;
     });
 
     // The hub stays up across many ingests; keep collection_runs bounded.
     if (runRows.length) await pruneCollectionRuns(db);
 
-    sendJson(res, { ok: true, mode: fullRebuild ? 'full' : 'incremental', daily: dailyRows.length, time: timeRows.length, sessions: sessionRows.length, runs: runRows.length });
+    if (pricing) {
+      console.log(`[用量入库] Hub 已计价，调用数: ${timeRows.length}，日汇总数: ${writtenDaily}，价格版本: ${pricing.version}`);
+    }
+    sendJson(res, { ok: true, mode: fullRebuild ? 'full' : 'incremental', daily: writtenDaily, time: timeRows.length, sessions: sessionRows.length, runs: runRows.length });
   } catch (error) {
+    console.warn('[用量入库] 上报失败，请检查上报数据、价格规则和数据库。', error);
     sendJson(res, { error: error.message }, 400);
   }
 }
@@ -471,12 +486,19 @@ async function handleReprice(req, res) {
   }
   let options;
   try {
-    const { start, end, previewId } = await readJson(req);
+    const { start, end, previewId, model, recoverLegacyPiZero = false } = await readJson(req);
     if (!validDate(start) || !validDate(end) || start > end) throw new Error('请选择有效的开始和结束日期');
+    if (model != null && (typeof model !== 'string' || !model.trim() || model.length > 255 || model.includes('\0'))) {
+      throw new Error('请输入有效的完整模型 ID');
+    }
+    if (typeof recoverLegacyPiZero !== 'boolean' || recoverLegacyPiZero && !model?.trim()) {
+      throw new Error('补算旧版 Pi Agent 零金额时，请填写完整模型 ID');
+    }
     if (previewId !== undefined && (typeof previewId !== 'string' || !/^[a-f0-9]{64}$/.test(previewId))) {
       throw new Error('请先预览这段日期的费用差额');
     }
-    options = { start, end, previewId, apply: previewId !== undefined, protect: true };
+    options = { start, end, model: model?.trim(), recoverLegacyPiZero, source: recoverLegacyPiZero ? 'Pi Agent' : undefined,
+      previewId, apply: previewId !== undefined, protect: true };
   } catch (error) {
     sendJson(res, { error: error.message }, 400);
     return;
@@ -484,7 +506,7 @@ async function handleReprice(req, res) {
   try {
     const pricing = await currentPricingSnapshot();
     const { scopes, backupPath, ...result } = await repriceUsage(db, pricing, options);
-    console.log(`[费用重算] ${options.apply ? '执行' : '预览'}，开始: ${options.start}，结束: ${options.end}，范围: ${scopes.length}，调用: ${result.counts.time}，差额 USD: ${result.difference}，价格版本: ${pricing.version}`);
+    console.log(`[费用重算] ${options.apply ? '执行' : '预览'}，开始: ${options.start}，结束: ${options.end}，模型: ${options.model || '全部'}，补算旧 Pi 零金额: ${options.recoverLegacyPiZero}，范围: ${scopes.length}，调用: ${result.counts.time}，差额 USD: ${result.difference}，价格版本: ${pricing.version}`);
     if (backupPath) console.log(`[费用重算] 服务端备份: ${backupPath}`);
     sendJson(res, { ...result, backupFile: backupPath ? basename(backupPath) : null });
   } catch (error) {

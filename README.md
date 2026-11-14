@@ -291,7 +291,7 @@ docker compose -f docker-compose.source.yml up -d
 
 「模型定价」页（`/pricing`）按美元 / 百万 token 显示内置默认价，可为模型设置覆盖价。渠道规则默认关闭，勾选后才按 `Provider + 模型 ID` 和调用时间选择峰价或谷价。Provider 使用事件明细中的原值，谷时含开始、不含结束，支持跨午夜。未匹配规则、Provider 缺失或缺少调用时间的记录使用模型默认价。
 
-规则保存到 Hub 的 `data/pricing-rules.json`。使用 `--push` 的采集端在每批采集前从 Hub 拉取价格，失败时使用该 Hub 上次成功下载的版本。没有可用缓存时会报告拉取失败。直连共享数据库可设置 `PRICING_SNAPSHOT_URL`；Hub 本机采集默认读取同一份规则文件。
+规则保存到 Hub 的 `data/pricing-rules.json`。使用 `--push` 的新版采集端上报用量和有明确来源的供应商账单金额。Hub 按实际调用时间在入库时估算费用，保存价格版本，并保留重复上报的调用金额。升级时先更新 Hub，旧版采集器仍可使用原协议上报。独立本机采集继续使用本地价格，直连共享数据库可设置 `PRICING_SNAPSHOT_URL`。
 
 需要刷新 Hub 的内置默认价时可运行：
 
@@ -300,6 +300,8 @@ npm run pricing:update
 ```
 
 保存规则后，新采集的用量按匹配的价格计算。在 Hub 的「模型定价 → 历史费用重算」选择日期，预览原金额、新金额和差额，再确认执行。Hub 会先备份受影响的范围，再更新已上报的估算费用。正常重传相同用量时，Hub 保留重算结果。
+
+已核实为本地估算的旧 Pi Agent 零金额，可选日期、填写完整模型 ID，勾选「仅补算旧版 Pi Agent 的零金额」后预览差额。缺少 Provider 时使用模型默认价。
 
 也可以在原采集库用命令行预览：
 
@@ -341,7 +343,7 @@ npm run collect -- --source "Codex CLI" --full --apply
 - 采集器读取**本机文件**；使用本地 SQLite 且未设置远程价格或推送地址时，采集不联网。配置远程 `DATABASE_URL` 后，采集会连接并写入该数据库。
 - `npm run pricing:update` 会主动访问上游定价源，用于刷新本地价格缓存。
 - 除非显式传入 `--push`，否则不会上传任何数据。
-- `--push` 从同一 Hub 的价格接口读取规则，并向指定地址发送数据。
+- `--push` 将调用明细发送到指定 Hub，由 Hub 入库计价。
 - 默认只监听本机；外部监听必须设置 token，看板、读取 API 和写入 API 均鉴权。
 - `POST /api/collect` 仅允许从本机触发，避免远程页面随意扫描你的本地日志。
 - 不要将 `data/usage.sqlite`、`.env` 或任何采集导出文件提交到 Git。

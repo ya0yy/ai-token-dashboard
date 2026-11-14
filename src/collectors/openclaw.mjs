@@ -39,7 +39,7 @@ import { cachedParse, flushCache } from './parse-cache.mjs';
 
 export const CLIENT_KEY  = 'openclaw';
 export const SOURCE_LABEL = 'OpenClaw';
-const CACHE_VERSION = 4;   // bump when parseSessionFile output shape changes
+const CACHE_VERSION = 5;
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -260,6 +260,7 @@ function parseTranscript(text, sessionId, agentPath, fallbackTimestamp, origin) 
         eventKey,
         timestamp,
         pricingTime,
+        billedCostUSD: usage.cost?.totalFromProvider === true ? cost : null,
         mirrorTurn: mirror ? `${mirror[1]}:${mirror[2]}` : null,
         date,
         model: normalizeModelForGrouping(model),
@@ -424,7 +425,7 @@ export async function collect(pricingData = null) {
   const timeEvents = [];
 
   function accumulate(events) {
-    for (const { sessionId, agentPath, date, model, provider, tokens, cost, eventKey, timestamp, pricingTime } of events) {
+    for (const { sessionId, agentPath, date, model, provider, tokens, cost, eventKey, timestamp, pricingTime, billedCostUSD } of events) {
       if (seen.has(eventKey)) continue;
       seen.add(eventKey);
       const calculatedCost = calculateCost(model, tokens, pricingData, provider, { eventTime: pricingTime });
@@ -432,7 +433,8 @@ export async function collect(pricingData = null) {
       const ms = typeof timestamp === 'number' ? (timestamp < 1e12 ? timestamp * 1000 : timestamp) : Date.parse(timestamp);
       if (Number.isFinite(ms) && ms >= Date.now() - Number(process.env.TIME_USAGE_HISTORY_DAYS || Infinity) * 86400000) {
         timeEvents.push({ client: CLIENT_KEY, eventKey, eventTime: new Date(ms).toISOString(), usageDate: date,
-          sessionId, workspaceKey: agentPath, workspaceLabel: agentPath, model, provider, pricingTime, tokens, cost: effectiveCost, costBasis: cost != null ? 'recorded' : undefined });
+          sessionId, workspaceKey: agentPath, workspaceLabel: agentPath, model, provider, pricingTime, tokens,
+          billedCostUSD, cost: effectiveCost, costBasis: cost != null ? 'recorded' : undefined });
       }
 
       // Daily

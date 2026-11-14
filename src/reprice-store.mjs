@@ -50,7 +50,8 @@ export async function repriceUsage(db, pricing, options) {
     }
 
     // 执行时重新核对这次预览的范围、价格版本和金额，价格或用量变化时提示重新预览。
-    const id = digest([pricing.version, options.start, options.end, skipped, costBefore, costAfter, changes]);
+    const id = digest([pricing.version, options.start, options.end, options.model, options.recoverLegacyPiZero,
+      skipped, costBefore, costAfter, changes]);
     if (previewId && id !== previewId) {
       throw Object.assign(new Error('价格或用量已变化，请重新预览后再执行'), { status: 409 });
     }

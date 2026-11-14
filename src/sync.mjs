@@ -6,6 +6,10 @@ import { digest, exactColumn } from './sync-journal.mjs';
 const LEASE_MS = 120_000; // Each HTTP request times out after 60 seconds.
 const emptySnapshot = () => ({ daily: [], time: [], sessions: [] });
 
+function usageOnly({ costUSD, costBasis, pricingVersion, pricingLockedAt, hubRepriced, billedCostUSD, ...row }) {
+  return billedCostUSD == null ? row : { ...row, billedCostUSD };
+}
+
 async function claim(db, targetKey, scopeKey, owner) {
   await db.run(`INSERT INTO sync_targets (target_key, scope_key) VALUES (?, ?)
     ${db.driver === 'mysql' ? 'ON DUPLICATE KEY UPDATE target_key = VALUES(target_key)' : 'ON CONFLICT(target_key) DO NOTHING'}`,
@@ -57,7 +61,8 @@ async function acknowledge(db, targetKey, scopeKey, owner, revision) {
 /** First connection captures a baseline. Later runs read only transactional
  * changes; old event timestamps, repeated payloads and lost responses are safe.
  * No database transaction is held open across a network request. */
-export async function syncDatabase({ db, url, token, device, source, full = false, resync = false, scopes, fetcher = fetch }) {
+export async function syncDatabase({ db, url, token, device, source, full = false, resync = false,
+  scopes, hubPricing = false, fetcher = fetch }) {
   const target = new URL(url);
   if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('Use an HTTP(S) ingest URL and --token');
   target.hash = '';
@@ -71,25 +76,30 @@ export async function syncDatabase({ db, url, token, device, source, full = fals
     try {
       const plan = await capture(db, scope, after, full, resync);
       const send = async payload => {
+        if (hubPricing) payload = { mode: payload.mode, scopes: payload.scopes, pricing: 'hub', time: payload.time.map(usageOnly) };
         const body = JSON.stringify(payload);
         if (Buffer.byteLength(body) > 48 * 1024 * 1024) throw new Error('Replacement exceeds 48 MiB; rebuild one source at a time with --source');
         await renew(db, targetKey, owner);
         const response = await fetcher(target.href, {
-          method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+          // PUT 让旧 Hub 明确拒绝新版用量，避免它按零金额接收入库。
+          method: hubPricing ? 'PUT' : 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
           body, signal: AbortSignal.timeout(60_000)
         });
-        if (!response.ok) throw new Error(`Upload failed: HTTP ${response.status}`);
+        if (!response.ok) {
+          if (hubPricing && [404, 405].includes(response.status)) throw new Error('上报失败：请先升级 Hub 以支持服务端入库计价。');
+          throw new Error(`Upload failed: HTTP ${response.status}`);
+        }
         if ((await response.json()).ok !== true) throw new Error('Hub did not acknowledge upload');
         result.requests++;
       };
       if (plan.mode === 'full') await send({ mode: 'full', scopes: [scope], ...plan.snapshot });
       else {
-        const count = Math.max(...Object.values(plan.snapshot).map(rows => rows.length));
+        const count = hubPricing ? plan.snapshot.time.length : Math.max(...Object.values(plan.snapshot).map(rows => rows.length));
         for (let i = 0; i < count; i += 1000) await send({ mode: 'incremental',
           ...Object.fromEntries(Object.entries(plan.snapshot).map(([kind, rows]) => [kind, rows.slice(i, i + 1000)])) });
       }
       if (after !== plan.revision || plan.mode === 'full') await acknowledge(db, targetKey, scopeKey, owner, plan.revision);
-      for (const kind of Object.keys(result.rows)) result.rows[kind] += plan.snapshot[kind].length;
+      for (const kind of hubPricing ? ['time'] : Object.keys(result.rows)) result.rows[kind] += plan.snapshot[kind].length;
     } finally {
       await db.run('UPDATE sync_targets SET lease_owner = NULL, lease_until = 0 WHERE target_key = ? AND lease_owner = ?', [targetKey, owner]);
     }

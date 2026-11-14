@@ -9,7 +9,7 @@ function sameTokens(a, b) {
 
 function preservedCost(row, old) {
   return { ...row, costUSD: old.costUSD, costBasis: old.costBasis,
-    pricingVersion: old.pricingVersion, hubRepriced: 1 };
+    pricingVersion: old.pricingVersion, billedCostUSD: old.billedCostUSD, hubRepriced: 1 };
 }
 
 // 调用方先锁定上报涉及的范围。全量替换前也要读取旧记录，以便识别重复上报。

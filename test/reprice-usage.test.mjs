@@ -12,7 +12,7 @@ import { onboardingFixture } from './helpers/onboarding.mjs';
 
 const runFile = promisify(execFile);
 
-test('采集端从 Hub 拉取规则，按请求时间与渠道上报估价并保留真实账单', { timeout: 30_000 }, async t => {
+test('采集端只上报调用和确认账单，由 Hub 按请求时间与渠道计价', { timeout: 30_000 }, async t => {
   const hub = await startServer({ DASHBOARD_TOKEN: 'reader', INGEST_TOKEN: 'collector' });
   t.after(() => hub.close());
   const fixture = onboardingFixture();
@@ -56,6 +56,12 @@ test('采集端从 Hub 拉取规则，按请求时间与渠道上报估价并保
   };
   const expected = [['edge', 10, version], ['edge', 2, version], [null, 5, version], ['edge', 0, null]];
   assert.deepEqual(await read(), expected);
+  const local = await openDb(fixture.dbPath, { readOnly: true });
+  try {
+    const { time } = await readSnapshot(local);
+    assert.ok(time.every(call => call.pricingVersion === null));
+    assert.equal(time.filter(call => call.billedCostUSD === 0).length, 1);
+  } finally { await local.close(); }
   await publish({ ...policy, rules: [], defaults: [{ model: 'test-model', rates: rate(50) }] });
   await run();
   assert.deepEqual(await read(), expected);
