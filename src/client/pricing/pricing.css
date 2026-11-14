@@ -60,7 +60,8 @@
   font-size: 13px;
 }
 
-.pricing-panel input:not([type="checkbox"]) {
+.pricing-panel input:not([type="checkbox"]),
+.pricing-panel select {
   width: 100%;
   min-width: 0;
   min-height: 36px;

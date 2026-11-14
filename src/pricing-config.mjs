@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { validDate } from './ingest-validation.mjs';
-import { loadPricing, priceFields } from './pricing.mjs';
+import { loadPricing, priceFields, pricingRuleModel } from './pricing.mjs';
+import { deepSeekApiSchedule } from './deepseek-schedule.mjs';
 import { normalizeModelForGrouping } from './collectors/utils.mjs';
 import { resolveDisplayTz } from './timezone.mjs';
 
@@ -52,16 +53,18 @@ export function validatePricingPolicy(value) {
     const provider = identifier(row?.provider, 'Provider');
     const model = identifier(row.model, '模型 ID').toLowerCase();
     if (typeof row.enabled !== 'boolean') throw new Error('峰谷价开关无效');
-    const { offPeakStart, offPeakEnd, effectiveFrom = null } = row;
+    const { offPeakStart, offPeakEnd, effectiveFrom = null, schedule } = row;
+    if (effectiveFrom !== null && !validDate(effectiveFrom)) throw new Error('生效日期无效');
+    const price = { provider, model, enabled: row.enabled, peak: rates(row.peak), offPeak: rates(row.offPeak) };
+    if (schedule === deepSeekApiSchedule) return { ...price, schedule, effectiveFrom };
+    if (schedule != null) throw new Error('不支持的峰谷时段');
     if (typeof offPeakStart !== 'string' || typeof offPeakEnd !== 'string'
       || !clock.test(offPeakStart) || !clock.test(offPeakEnd) || offPeakStart === offPeakEnd) {
       throw new Error('请填写不同的谷时开始与结束时间（HH:mm）');
     }
-    if (effectiveFrom !== null && !validDate(effectiveFrom)) throw new Error('生效日期无效');
-    return { provider, model, enabled: row.enabled, peak: rates(row.peak), offPeak: rates(row.offPeak),
-      offPeakStart, offPeakEnd, effectiveFrom };
+    return { ...price, offPeakStart, offPeakEnd, effectiveFrom };
   });
-  if (new Set(rules.map(row => JSON.stringify([row.provider, normalizeModelForGrouping(row.model)]))).size !== rules.length) {
+  if (new Set(rules.map(row => JSON.stringify([row.provider, pricingRuleModel(row.model)]))).size !== rules.length) {
     throw new Error('同一 Provider 和模型只能配置一条峰谷规则');
   }
   return { timeZone, defaults, rules };
@@ -76,11 +79,13 @@ export async function readPricingPolicy() {
 }
 
 // 整份规则和内置目录共同决定版本，目录更新后也能区分计价依据。
-export async function currentPricingSnapshot() {
+export async function currentPricingSnapshot({ legacySchedulesOnly = false } = {}) {
   const [policy, litellm, openrouter] = await Promise.all([
     readPricingPolicy(), readCatalog('litellm'), readCatalog('openrouter')
   ]);
-  const snapshot = { policy, litellm, openrouter };
+  // 旧采集器只能解析每日单段谷时。兼容快照的版本基于实际发送的规则。
+  const compatiblePolicy = legacySchedulesOnly ? { ...policy, rules: policy.rules.filter(rule => !rule.schedule) } : policy;
+  const snapshot = { policy: compatiblePolicy, litellm, openrouter };
   return { ...snapshot, version: hash(JSON.stringify(snapshot)) };
 }
 
@@ -130,6 +135,7 @@ export async function loadCollectionPricing({ push, token, requireFresh = false 
     throw new Error('请使用 HTTP(S) 上报地址和 --token');
   }
   const endpoint = push ? new URL('pricing/snapshot', target) : target;
+  endpoint.searchParams.set('schedules', 'extended');
   const pricingToken = token || process.env.PRICING_SNAPSHOT_TOKEN;
   const cachePath = resolve('data', 'pricing-cache', `${hash(endpoint.href)}.json`);
   let cached = null;

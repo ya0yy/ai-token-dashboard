@@ -150,6 +150,26 @@ try {
   await pricing.getByText('+$0.10', { exact: true }).waitFor();
   await pricing.getByRole('button', { name: '确认重算' }).click();
   await pricing.getByRole('status').filter({ hasText: '重算完成' }).waitFor();
+
+  const official = { ...legacy, usageDate: '2026-10-28' };
+  assert.equal((await app.ingest({ daily: [official], time: [event({ ...official, eventKey: 'off-peak',
+    eventTime: '2026-10-28T04:00:00Z' })] })).status, 200);
+  await pricing.getByRole('button', { name: '添加渠道规则' }).click();
+  const editor = pricing.getByRole('region', { name: '渠道峰谷价' });
+  await editor.getByLabel('Provider', { exact: true }).fill('official-reference');
+  await editor.getByLabel('模型 ID', { exact: true }).fill(`deepseek/${official.model}`);
+  await editor.getByLabel('启用峰谷价').check();
+  await editor.getByLabel('计价时段').selectOption('deepseek-api');
+  await pricing.getByRole('button', { name: '保存价格规则' }).click();
+  await pricing.getByText('价格规则已保存。', { exact: true }).waitFor();
+  const preview = pricing.getByRole('region', { name: '历史费用重算' });
+  await preview.getByLabel('开始日期').fill(official.usageDate);
+  await preview.getByLabel('结束日期').fill(official.usageDate);
+  await preview.getByLabel('模型 ID').fill(official.model);
+  await preview.getByLabel('仅补算旧版 Pi Agent 的零金额').check();
+  await preview.getByLabel('缺少 Provider 时使用的参考价').selectOption('official-reference');
+  await preview.getByRole('button', { name: '预览差额' }).click();
+  await preview.getByText('+$0.000021', { exact: true }).waitFor();
   await pricing.close();
   console.log('Browser smoke passed: timezone, config retry, stale response, precise summary, detail pagination/retry, CSV, mobile, review, chart recovery, pricing preview and apply.');
 } finally {

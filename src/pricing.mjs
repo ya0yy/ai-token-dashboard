@@ -16,6 +16,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { canonicalProvider, inferProviderFromModel, normalizeModelForGrouping } from './collectors/utils.mjs';
 import { zonedParts } from './timezone.mjs';
+import { deepSeekApiRates, deepSeekApiSchedule } from './deepseek-schedule.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -168,20 +169,29 @@ export function hasModelPricing(model, pricingData, provider = null, options = {
   return resolveRates(model, pricingData, provider, options.eventTime) != null;
 }
 
+export function pricingRuleModel(model) {
+  const id = normalizeModelForGrouping(model);
+  // 目录使用发布者前缀，Pi 日志里的同款模型使用裸 ID。
+  return id === 'deepseek/deepseek-v4.1-flash-1017' ? id.slice('deepseek/'.length) : id;
+}
+
 function customRates(model, policy, provider, eventTime) {
   if (!policy) return null;
   if (!_policyIndexes.has(policy)) {
     _policyIndexes.set(policy, {
       defaults: new Map(policy.defaults.map(row => [normalizeModelForGrouping(row.model), row.rates])),
       rules: new Map(policy.rules.filter(row => row.enabled)
-        .map(row => [JSON.stringify([row.provider, normalizeModelForGrouping(row.model)]), row]))
+        .map(row => [JSON.stringify([row.provider, pricingRuleModel(row.model)]), row]))
     });
   }
   const index = _policyIndexes.get(policy);
   const id = normalizeModelForGrouping(model);
   // 渠道使用日志中的 ID，避免把 Vertex、Anthropic 等渠道合并。
-  const rule = typeof provider === 'string' && index.rules.get(JSON.stringify([provider.trim(), id]));
+  const rule = typeof provider === 'string' && index.rules.get(JSON.stringify([provider.trim(), pricingRuleModel(id)]));
   if (rule && eventTime != null) {
+    if (rule.schedule === deepSeekApiSchedule) {
+      return deepSeekApiRates(rule, eventTime) ?? index.defaults.get(id) ?? null;
+    }
     const local = zonedParts(eventTime, policy.timeZone, true);
     if (local && (!rule.effectiveFrom || local.date >= rule.effectiveFrom)) {
       const minute = local.hour * 60 + local.minute;

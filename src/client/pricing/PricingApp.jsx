@@ -8,6 +8,11 @@ const fields = [
   ['input', '输入'], ['output', '输出'], ['cacheRead', '缓存读取'], ['cacheWrite', '缓存写入']
 ];
 const blankRates = { input: '', output: '', cacheRead: '', cacheWrite: '' };
+const deepSeekFlashModel = 'deepseek/deepseek-v4.1-flash-1017';
+const deepSeekFlashPrices = {
+  peak: { input: 0.30, output: 1.20, cacheRead: 0.006, cacheWrite: 0 },
+  offPeak: { input: 0.15, output: 0.60, cacheRead: 0.003, cacheWrite: 0 }
+};
 const pageSize = 8;
 const amount = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 12 });
 
@@ -200,7 +205,7 @@ function PricingEditor({ data, onSaved }) {
             <div className="pricing-heading">
               <div>
                 <h2 id="rules-title">渠道峰谷价</h2>
-                <p>启用后按调用时间计费。谷时包含开始时间，可跨午夜，其余时间用峰价。</p>
+                <p>启用后按调用时间计费。单段谷时可跨午夜，也可以使用 DeepSeek 官方时段。</p>
               </div>
               <button type="button" className="btn" onClick={() => changePolicy({ rules: [...policy.rules, {
                 provider: '', model: '', enabled: false,
@@ -233,19 +238,38 @@ function PricingEditor({ data, onSaved }) {
                   启用峰谷价
                 </label>
                 <div className="pricing-rates pricing-schedule">
-                  <label>谷时开始
-                    <input type="time" required value={rule.offPeakStart}
-                      onChange={event => updateRow('rules', index, { offPeakStart: event.target.value })} />
+                  <label>计价时段
+                    <select value={rule.schedule || ''} onChange={event => {
+                      const schedule = event.target.value || undefined;
+                      const isFlash = [deepSeekFlashModel, 'deepseek-v4.1-flash-1017'].includes(rule.model.trim().toLowerCase());
+                      updateRow('rules', index, { schedule,
+                        ...(schedule && isFlash && { peak: { ...deepSeekFlashPrices.peak }, offPeak: { ...deepSeekFlashPrices.offPeak } })
+                      });
+                    }}>
+                      <option value="">每天单段谷时</option>
+                      <option value="deepseek-api">DeepSeek 官方峰谷时段</option>
+                    </select>
                   </label>
-                  <label>谷时结束
-                    <input type="time" required value={rule.offPeakEnd}
-                      onChange={event => updateRow('rules', index, { offPeakEnd: event.target.value })} />
-                  </label>
+                  {rule.schedule !== 'deepseek-api' && (
+                    <>
+                      <label>谷时开始
+                        <input type="time" required value={rule.offPeakStart || ''}
+                          onChange={event => updateRow('rules', index, { offPeakStart: event.target.value })} />
+                      </label>
+                      <label>谷时结束
+                        <input type="time" required value={rule.offPeakEnd || ''}
+                          onChange={event => updateRow('rules', index, { offPeakEnd: event.target.value })} />
+                      </label>
+                    </>
+                  )}
                   <label>生效日期（可选）
                     <input type="date" value={rule.effectiveFrom || ''}
                       onChange={event => updateRow('rules', index, { effectiveFrom: event.target.value })} />
                   </label>
                 </div>
+                {rule.schedule === 'deepseek-api' && (
+                  <p className="muted">北京时间周一至周五 09:00–12:00、14:00–18:00 为峰时。周末、节假日和其余时间用谷价。</p>
+                )}
                 <RateFields title="峰价" rates={rule.peak}
                   onChange={peak => updateRow('rules', index, { peak })} />
                 <RateFields title="谷价" rates={rule.offPeak}
@@ -297,7 +321,7 @@ export function PricingApp() {
         onClick={() => setAttempt(value => value + 1)}>重试</button></p>}
       {!data && !error && <p role="status">正在加载模型价格…</p>}
       {data && <PricingEditor data={data} onSaved={setData} />}
-      {data && <RepricePanel key={data.version} />}
+      {data && <RepricePanel key={data.version} rules={data.policy.rules} />}
     </main>
   );
 }

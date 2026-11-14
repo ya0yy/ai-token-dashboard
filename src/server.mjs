@@ -12,7 +12,7 @@ import {
 } from './db.mjs';
 import { batchUpsertDaily, batchUpsertSession, batchUpsertTimeUsage } from './db-batch.mjs';
 import { loadCollectorConfig } from './collector-config.mjs';
-import { loadPricing, hasModelPricing, pricingSnapshotTime, defaultPriceTable } from './pricing.mjs';
+import { loadPricing, hasModelPricing, pricingSnapshotTime, defaultPriceTable, pricingRuleModel } from './pricing.mjs';
 import { currentPricingSnapshot, readPricingPolicy, savePricingPolicy, validatePricingPolicy } from './pricing-config.mjs';
 import { queryQuota } from './quota.mjs';
 import { authorize, isLoopback, serverAccess, trustedRequest } from './http-security.mjs';
@@ -95,7 +95,7 @@ server.listen(port, access.host, () => {
 
 async function handleApi(req, url, res) {
   if (url.pathname === '/api/pricing/snapshot' && req.method === 'GET') {
-    const snapshot = await currentPricingSnapshot();
+    const snapshot = await currentPricingSnapshot({ legacySchedulesOnly: url.searchParams.get('schedules') !== 'extended' });
     const etag = `"${snapshot.version}"`;
     if (req.headers['if-none-match'] === etag) {
       res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
@@ -486,7 +486,7 @@ async function handleReprice(req, res) {
   }
   let options;
   try {
-    const { start, end, previewId, model, recoverLegacyPiZero = false } = await readJson(req);
+    const { start, end, previewId, model, recoverLegacyPiZero = false, fallbackProvider } = await readJson(req);
     if (!validDate(start) || !validDate(end) || start > end) throw new Error('请选择有效的开始和结束日期');
     if (model != null && (typeof model !== 'string' || !model.trim() || model.length > 255 || model.includes('\0'))) {
       throw new Error('请输入有效的完整模型 ID');
@@ -494,10 +494,15 @@ async function handleReprice(req, res) {
     if (typeof recoverLegacyPiZero !== 'boolean' || recoverLegacyPiZero && !model?.trim()) {
       throw new Error('补算旧版 Pi Agent 零金额时，请填写完整模型 ID');
     }
+    if (fallbackProvider !== undefined && (!recoverLegacyPiZero || typeof fallbackProvider !== 'string'
+      || !fallbackProvider.trim() || fallbackProvider.length > 255 || fallbackProvider.includes('\0'))) {
+      throw new Error('仅补算旧版 Pi Agent 零金额时可为缺少供应商的调用选择参考规则');
+    }
     if (previewId !== undefined && (typeof previewId !== 'string' || !/^[a-f0-9]{64}$/.test(previewId))) {
       throw new Error('请先预览这段日期的费用差额');
     }
-    options = { start, end, model: model?.trim(), recoverLegacyPiZero, source: recoverLegacyPiZero ? 'Pi Agent' : undefined,
+    options = { start, end, model: model?.trim(), recoverLegacyPiZero, fallbackProvider: fallbackProvider?.trim(),
+      source: recoverLegacyPiZero ? 'Pi Agent' : undefined,
       previewId, apply: previewId !== undefined, protect: true };
   } catch (error) {
     sendJson(res, { error: error.message }, 400);
@@ -505,8 +510,13 @@ async function handleReprice(req, res) {
   }
   try {
     const pricing = await currentPricingSnapshot();
+    if (options.fallbackProvider && !pricing.policy.rules.some(rule => rule.enabled && rule.provider === options.fallbackProvider
+      && pricingRuleModel(rule.model) === pricingRuleModel(options.model))) {
+      sendJson(res, { error: '该模型没有匹配的已启用渠道规则，请重新选择参考 Provider' }, 400);
+      return;
+    }
     const { scopes, backupPath, ...result } = await repriceUsage(db, pricing, options);
-    console.log(`[费用重算] ${options.apply ? '执行' : '预览'}，开始: ${options.start}，结束: ${options.end}，模型: ${options.model || '全部'}，补算旧 Pi 零金额: ${options.recoverLegacyPiZero}，范围: ${scopes.length}，调用: ${result.counts.time}，差额 USD: ${result.difference}，价格版本: ${pricing.version}`);
+    console.log(`[费用重算] ${options.apply ? '执行' : '预览'}，开始: ${options.start}，结束: ${options.end}，模型: ${options.model || '全部'}，补算旧 Pi 零金额: ${options.recoverLegacyPiZero}，参考 Provider: ${options.fallbackProvider || '默认'}，范围: ${scopes.length}，调用: ${result.counts.time}，差额 USD: ${result.difference}，价格版本: ${pricing.version}`);
     if (backupPath) console.log(`[费用重算] 服务端备份: ${backupPath}`);
     sendJson(res, { ...result, backupFile: backupPath ? basename(backupPath) : null });
   } catch (error) {

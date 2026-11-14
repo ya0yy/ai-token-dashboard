@@ -105,6 +105,52 @@ test('定价页主动补算旧 Pi 零估价，预览期间保留原费用，并�
   assert.equal(stored.daily.find(row => row.device === 'laptop' && row.source === 'Pi Agent').costUSD, 10);
 });
 
+test('DeepSeek 官方峰谷规则按北京时间计费，历史预览可为缺少 Provider 的调用选用规则', { timeout: 20_000 }, async t => {
+  const hub = await startServer();
+  const db = await openDb(join(hub.root, 'usage.sqlite'), { readOnly: true });
+  t.after(async () => { await db.close(); await hub.close(); });
+  const referenceProvider = 'official-reference';
+  const rule = {
+    model: `deepseek/${model}`, provider: referenceProvider, enabled: true, schedule: 'deepseek-api',
+    peak: { input: 0.30, output: 1.20, cacheRead: 0.006, cacheWrite: 0 },
+    offPeak: { input: 0.15, output: 0.60, cacheRead: 0.003, cacheWrite: 0 }
+  };
+  await post(hub, '/api/pricing', { timeZone: 'UTC', defaults: [{ model, rates: rates(9) }], rules: [rule] }, 'PUT');
+  const snapshot = async query => (await fetch(`${hub.base}/api/pricing/snapshot${query}`,
+    { signal: AbortSignal.timeout(5000) })).json();
+  assert.equal((await snapshot('?schedules=extended')).policy.rules[0].schedule, 'deepseek-api');
+  assert.deepEqual((await snapshot('')).policy.rules, []);
+  const time = [
+    ['first-peak', '2026-10-27', '01:00:00'],
+    ['midday', '2026-10-27', '04:00:00'],
+    ['second-peak', '2026-10-27', '06:00:00'],
+    ['evening', '2026-10-27', '10:00:00'],
+    ['weekend', '2026-10-31', '01:00:00'],
+    ['holiday', '2026-10-01', '01:00:00'],
+    ['next-year-holiday', '2027-02-05', '01:00:00']
+  ].map(([key, date, hour]) => call(key, { provider: referenceProvider, usageDate: date, eventTime: `${date}T${hour}Z` }));
+  assert.equal((await hub.ingest({ pricing: 'hub', time })).status, 200);
+  const priced = Object.fromEntries((await readSnapshot(db)).time.map(row => [row.eventKey, row.costUSD]));
+  assert.deepEqual(priced, {
+    'first-peak': 0.3, midday: 0.15, 'second-peak': 0.3, evening: 0.15,
+    weekend: 0.15, holiday: 0.15, 'next-year-holiday': 0.15
+  });
+
+  const missing = call('without-provider', { device: 'legacy', costBasis: 'recorded', costUSD: 0 });
+  const known = { ...missing, eventKey: 'with-provider', provider: 'another-provider' };
+  const summary = { ...missing, inputTokens: 2_000_000, totalTokens: 2_000_000 };
+  assert.equal((await hub.ingest({ daily: [summary], time: [missing, known] })).status, 200);
+  const preview = await post(hub, '/api/pricing/reprice', {
+    start: usageDate, end: usageDate, model, recoverLegacyPiZero: true, fallbackProvider: referenceProvider
+  });
+  assert.equal(preview.counts.time, 2);
+  assert.equal(preview.costBefore, 0);
+  assert.equal(preview.difference, 9.3);
+  const original = (await readSnapshot(db)).time.find(row => row.eventKey === missing.eventKey);
+  assert.equal(original.provider, null);
+  assert.equal(original.costUSD, 0);
+});
+
 for (const [driver, name] of [['postgres', 'TEST_POSTGRES_URL'], ['mysql', 'TEST_MYSQL_URL']]) {
   test(`Hub 入库计价和重算兼容 ${driver}`, { skip: !process.env[name], timeout: 30_000 }, async t => {
     const url = process.env[name];
