@@ -304,20 +304,24 @@ function PricingEditor({ data, onSaved }) {
                     onChange={event => updateRow('rules', index, { enabled: event.target.checked })} />
                   启用峰谷价
                 </label>
-                <ScheduleFields schedule={editableSchedule(rule, policy.timeZone)} effectiveFrom={rule.effectiveFrom}
-                  offPeakDatesText={rule.offPeakDatesText}
-                  onChange={changes => updateRow('rules', index, { ...editableSchedule(rule, policy.timeZone), ...changes })}
-                  onPreset={() => {
-                    const isFlash = [deepSeekFlashModel, 'deepseek-v4.1-flash-1017'].includes(rule.model.trim().toLowerCase());
-                    updateRow('rules', index, {
-                      ...deepSeekSchedulePreset, offPeakDatesText: undefined,
-                      ...(isFlash && deepSeekFlashPrices)
-                    });
-                  }} />
-                <RateFields title="峰价" rates={rule.peak}
-                  onChange={peak => updateRow('rules', index, { peak })} />
-                <RateFields title="谷价" rates={rule.offPeak}
-                  onChange={offPeak => updateRow('rules', index, { offPeak })} />
+                {rule.enabled && (
+                  <>
+                    <ScheduleFields schedule={editableSchedule(rule, policy.timeZone)} effectiveFrom={rule.effectiveFrom}
+                      offPeakDatesText={rule.offPeakDatesText}
+                      onChange={changes => updateRow('rules', index, { ...editableSchedule(rule, policy.timeZone), ...changes })}
+                      onPreset={() => {
+                        const isFlash = [deepSeekFlashModel, 'deepseek-v4.1-flash-1017'].includes(rule.model.trim().toLowerCase());
+                        updateRow('rules', index, {
+                          ...deepSeekSchedulePreset, offPeakDatesText: undefined,
+                          ...(isFlash && deepSeekFlashPrices)
+                        });
+                      }} />
+                    <RateFields title="峰价" rates={rule.peak}
+                      onChange={peak => updateRow('rules', index, { peak })} />
+                    <RateFields title="谷价" rates={rule.offPeak}
+                      onChange={offPeak => updateRow('rules', index, { offPeak })} />
+                  </>
+                )}
               </div>
             ))}
           </section>

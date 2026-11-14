@@ -177,6 +177,7 @@ try {
   const customRule = editor.locator('.pricing-entry').last();
   await customRule.getByLabel('Provider', { exact: true }).fill('aliyun-token-plan');
   await customRule.getByLabel('模型 ID', { exact: true }).fill(official.model);
+  assert.equal(await customRule.getByRole('group', { name: '计价时段', exact: true }).count(), 0);
   await customRule.getByLabel('启用峰谷价').check();
   await customRule.getByLabel('计价时区').fill('UTC');
   await customRule.getByRole('button', { name: '添加峰时时段' }).click();
@@ -191,6 +192,23 @@ try {
   await pricing.reload();
   assert.equal(await officialRule.getByLabel('峰时开始').nth(1).inputValue(), '13:30');
   assert.equal(await customRule.getByLabel('计价时区').inputValue(), 'UTC');
+  await customRule.getByLabel('启用峰谷价').uncheck();
+  for (const name of ['计价时段', '峰价', '谷价']) {
+    assert.equal(await customRule.getByRole('group', { name, exact: true }).count(), 0);
+  }
+  assert.equal(await officialRule.getByLabel('计价时区').inputValue(), 'Asia/Shanghai');
+  await pricing.getByRole('button', { name: '保存价格规则' }).click();
+  await pricing.getByText('价格规则已保存。', { exact: true }).waitFor();
+  await pricing.reload();
+  assert.equal(await customRule.getByLabel('启用峰谷价').isChecked(), false);
+  assert.equal(await customRule.getByLabel('计价时区').count(), 0);
+  await customRule.getByLabel('启用峰谷价').check();
+  assert.equal(await customRule.getByLabel('计价时区').inputValue(), 'UTC');
+  assert.equal(await customRule.getByLabel('峰时开始').inputValue(), '08:00');
+  for (const title of ['峰价', '谷价']) {
+    const prices = customRule.getByRole('group', { name: title, exact: true });
+    assert.equal(await prices.getByLabel('输入', { exact: true }).inputValue(), '0.5');
+  }
   const preview = pricing.getByRole('region', { name: '历史费用重算' });
   await preview.getByLabel('开始日期').fill(official.usageDate);
   await preview.getByLabel('结束日期').fill(official.usageDate);
