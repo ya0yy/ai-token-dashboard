@@ -27,7 +27,9 @@ providers. Prices are estimates unless the source records a billed amount.
   input/output split or price for unknown token types. Known billed costs,
   including explicit zero, remain available.
 - Gemini's recorded input includes cached prompt tokens. With no total hint,
-  the collector retains the cache-inclusive interpretation.
+  the collector retains the cache-inclusive interpretation. Timestamped messages
+  become call details, using Gemini's project-root marker when available. Headless
+  totals and messages without valid timestamps contribute to daily totals only.
 - Known OpenAI and xAI long-context model families use prompt-wide thresholds,
   including cached input, and switch the entire request to the relevant rate.
   Aggregated daily records must not be treated as individual long requests.
@@ -60,8 +62,8 @@ collector.
 
 Project counts and rankings use only event details with a real filesystem path.
 Session IDs and lifetime workspace totals are not substitutes for dated project
-activity. Sources without timestamp/project detail (including Gemini's current
-daily-only collector) are absent from those views. The UI shows coverage and
+activity. Sources without timestamp/project detail are absent from those views.
+The UI shows coverage and
 summary/detail differences; precise-view errors require retry, and an empty
 precise range remains empty.
 
@@ -120,7 +122,7 @@ database and pass `--push` and `--token` to sync the result to its hub.
 
 ## Synchronization
 
-The first `--push` sends a baseline of locally stored calls. Later pushes read
+The first `--push` sends a baseline of locally stored calls and daily totals. Later pushes read
 transactional change records in `sync_changes`, not a full usage snapshot or
 per-row history manifest. Progress in `sync_targets` is isolated by destination,
 device and source, and advances only after every chunk for that scope is
@@ -128,9 +130,14 @@ acknowledged. A failed chunk or lost response leaves that scope retryable;
 replayed upserts do not duplicate usage or generate another change revision.
 
 New collectors use `PUT /api/ingest` with `pricing: "hub"`, sending call
-details and optional `billedCostUSD` for confirmed charges. The hub updates its
-daily totals from call details and applies the published pricing snapshot to
-new calls. Upgrade the hub before the collectors. Older clients continue to use
+details, optional `billedCostUSD` for confirmed charges, and daily token snapshots.
+The hub applies the published pricing snapshot to new calls. Daily snapshots
+preserve coverage when details are missing and do not add tokens already present
+in the details. The hub records costs from the available calls, without estimating
+the missing portion from the daily snapshot. Historical daily charges are retained
+when their original pricing basis cannot be reconstructed. The first push after
+the collector protocol upgrade also sends any previously omitted daily totals.
+Upgrade the hub before the collectors. Older clients continue to use
 `POST /api/ingest` and can still send daily and session summaries with amounts.
 
 Usage writes and change records commit together across collection, HTTP ingest,
@@ -205,7 +212,9 @@ a transactional migration marker; it does not recalculate historical fees.
   eligible Pi Agent zero amounts. Submit the same filters with the returned
   `previewId` to apply the changes.
   `GET /api/pricing/snapshot` uses the ingest credential and returns the
-  versioned policy and catalog used by collectors.
+  versioned policy and catalog used by collectors. Clients that can apply
+  per-rule schedules request `?schedules=extended&ruleSchedules=custom`.
+  Older clients receive rules that can be represented in their schedule format.
 - `POST /api/collect` remains restricted to direct loopback requests. Foreign
   browser origins and local DNS rebinding requests are rejected.
 

@@ -159,9 +159,30 @@ try {
   await editor.getByLabel('Provider', { exact: true }).fill('official-reference');
   await editor.getByLabel('模型 ID', { exact: true }).fill(`deepseek/${official.model}`);
   await editor.getByLabel('启用峰谷价').check();
-  await editor.getByLabel('计价时段').selectOption('deepseek-api');
+  await editor.getByRole('button', { name: '套用 DeepSeek 官方时段' }).click();
+  const officialRule = editor.locator('.pricing-entry').filter({ has: pricing.locator('input[value="official-reference"]') });
+  assert.equal(await officialRule.getByLabel('计价时区').inputValue(), 'Asia/Shanghai');
+  assert.equal(await officialRule.getByLabel('峰时开始').count(), 2);
+  await officialRule.getByLabel('峰时开始').nth(1).fill('13:30');
+
+  await editor.getByRole('button', { name: '添加渠道规则' }).click();
+  const customRule = editor.locator('.pricing-entry').last();
+  await customRule.getByLabel('Provider', { exact: true }).fill('aliyun-token-plan');
+  await customRule.getByLabel('模型 ID', { exact: true }).fill(official.model);
+  await customRule.getByLabel('启用峰谷价').check();
+  await customRule.getByLabel('计价时区').fill('UTC');
+  await customRule.getByRole('button', { name: '添加峰时时段' }).click();
+  await customRule.getByLabel('峰时开始').fill('08:00');
+  await customRule.getByLabel('峰时结束').fill('22:00');
+  for (const title of ['峰价', '谷价']) {
+    const prices = customRule.getByRole('group', { name: title, exact: true });
+    for (const label of ['输入', '输出', '缓存读取', '缓存写入']) await prices.getByLabel(label, { exact: true }).fill('0.5');
+  }
   await pricing.getByRole('button', { name: '保存价格规则' }).click();
   await pricing.getByText('价格规则已保存。', { exact: true }).waitFor();
+  await pricing.reload();
+  assert.equal(await officialRule.getByLabel('峰时开始').nth(1).inputValue(), '13:30');
+  assert.equal(await customRule.getByLabel('计价时区').inputValue(), 'UTC');
   const preview = pricing.getByRole('region', { name: '历史费用重算' });
   await preview.getByLabel('开始日期').fill(official.usageDate);
   await preview.getByLabel('结束日期').fill(official.usageDate);

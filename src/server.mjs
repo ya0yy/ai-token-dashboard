@@ -14,6 +14,7 @@ import { batchUpsertDaily, batchUpsertSession, batchUpsertTimeUsage } from './db
 import { loadCollectorConfig } from './collector-config.mjs';
 import { loadPricing, hasModelPricing, pricingSnapshotTime, defaultPriceTable, pricingRuleModel } from './pricing.mjs';
 import { currentPricingSnapshot, readPricingPolicy, savePricingPolicy, validatePricingPolicy } from './pricing-config.mjs';
+import { editableSchedule } from './pricing-schedule.mjs';
 import { queryQuota } from './quota.mjs';
 import { authorize, isLoopback, serverAccess, trustedRequest } from './http-security.mjs';
 import { validDate, validateIngest } from './ingest-validation.mjs';
@@ -95,7 +96,10 @@ server.listen(port, access.host, () => {
 
 async function handleApi(req, url, res) {
   if (url.pathname === '/api/pricing/snapshot' && req.method === 'GET') {
-    const snapshot = await currentPricingSnapshot({ legacySchedulesOnly: url.searchParams.get('schedules') !== 'extended' });
+    const snapshot = await currentPricingSnapshot({
+      legacySchedulesOnly: url.searchParams.get('schedules') !== 'extended',
+      customSchedules: url.searchParams.get('ruleSchedules') === 'custom'
+    });
     const etag = `"${snapshot.version}"`;
     if (req.headers['if-none-match'] === etag) {
       res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
@@ -367,7 +371,7 @@ async function handleIngest(req, res) {
       const scopes = [...new Map([...payload.scopes, ...dailyRows, ...timeRows, ...sessionRows]
         .map(({ device, source }) => [JSON.stringify([device, source]), { device, source }])).values()];
       await invalidateCollectionState(tx, scopes);
-      const priced = pricing ? await prepareHubPricing(tx, timeRows, pricing) : null;
+      const priced = pricing ? await prepareHubPricing(tx, timeRows, pricing, dailyRows) : null;
       const reconciled = priced ? null : await preserveHubRepricing(tx, scopes, dailyRows, timeRows);
       for (const row of timePairs.values()) {
         for (const table of ['daily_usage', 'time_usage', 'session_usage']) {
@@ -466,7 +470,8 @@ async function handlePricing(req, res) {
       return;
     }
     await savePricingPolicy(policy);
-    console.log(`[模型定价] 已保存，默认价: ${policy.defaults.length}，峰谷规则: ${policy.rules.length}，时区: ${policy.timeZone}`);
+    const timeZones = [...new Set(policy.rules.map(rule => editableSchedule(rule, policy.timeZone).timeZone))];
+    console.log(`[模型定价] 已保存，默认价: ${policy.defaults.length}，峰谷规则: ${policy.rules.length}，规则时区: ${timeZones.join(', ') || '无'}`);
   } else if (req.method !== 'GET') {
     sendJson(res, { error: '请求方法不受支持' }, 405);
     return;

@@ -22,8 +22,8 @@ export function validateIngest(payload, { maxRows = 100_000 } = {}) {
   const mode = payload.mode ?? 'incremental';
   if (!['incremental', 'full'].includes(mode)) throw new Error('Invalid mode');
   if (payload.pricing != null && payload.pricing !== 'hub') throw new Error('Invalid pricing mode');
-  if (payload.pricing === 'hub' && (payload.daily?.length || payload.sessions?.length)) {
-    throw new Error('Hub 计价上报仅接受调用明细');
+  if (payload.pricing === 'hub' && payload.sessions?.length) {
+    throw new Error('Hub 计价上报接受调用明细和日汇总');
   }
   const result = { mode, pricing: payload.pricing ?? null };
   for (const kind of ['daily', 'time', 'sessions', 'runs', 'scopes']) {

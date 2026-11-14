@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { ThemeToggle } from '../shared/ThemeToggle.jsx';
 import { RepricePanel } from './RepricePanel.jsx';
+import { deepSeekSchedulePreset } from '../../deepseek-schedule.mjs';
+import { allDays, editableSchedule } from '../../pricing-schedule.mjs';
 import '../dashboard/styles.css';
 import './pricing.css';
 
@@ -36,6 +38,71 @@ function RateFields({ title, rates, onChange }) {
           </label>
         ))}
       </div>
+    </fieldset>
+  );
+}
+
+const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+function ScheduleFields({ schedule, effectiveFrom, offPeakDatesText, onChange, onPreset }) {
+  const { timeZone, peakPeriods, offPeakDates } = schedule;
+
+  function updatePeriod(index, changes) {
+    onChange({ peakPeriods: peakPeriods.map((period, i) => i === index ? { ...period, ...changes } : period) });
+  }
+
+  return (
+    <fieldset className="pricing-rate-fields">
+      <legend>计价时段</legend>
+      <div className="pricing-rates pricing-schedule">
+        <label>计价时区
+          <input required maxLength={64} value={timeZone} placeholder="Asia/Shanghai"
+            onChange={event => onChange({ timeZone: event.target.value })} />
+        </label>
+        <label>生效日期（可选）
+          <input type="date" value={effectiveFrom || ''} onChange={event => onChange({ effectiveFrom: event.target.value })} />
+        </label>
+      </div>
+      <p className="muted">所选星期和时段用峰价，其余时间用谷价。跨午夜的时段按开始当天的星期设置。</p>
+      {peakPeriods.map((period, index) => (
+        <fieldset className="pricing-period" key={index}>
+          <legend>峰时时段 {index + 1}</legend>
+          <div className="pricing-weekdays">
+            {weekdays.map((day, i) => (
+              <label className="pricing-checkbox" key={day}>
+                <input type="checkbox" checked={period.days.includes(i)} onChange={event =>
+                  updatePeriod(index, { days: event.target.checked ? [...period.days, i] : period.days.filter(d => d !== i) })
+                } />
+                {day}
+              </label>
+            ))}
+          </div>
+          <div className="pricing-period-times">
+            <label>峰时开始
+              <input type="time" required value={period.start}
+                onChange={event => updatePeriod(index, { start: event.target.value })} />
+            </label>
+            <label>峰时结束
+              <input type="time" required value={period.end}
+                onChange={event => updatePeriod(index, { end: event.target.value })} />
+            </label>
+            <button type="button" className="btn" aria-label={`移除峰时时段 ${index + 1}`}
+              onClick={() => onChange({ peakPeriods: peakPeriods.filter((_, i) => i !== index) })}>移除时段</button>
+          </div>
+        </fieldset>
+      ))}
+      <div className="pricing-period-actions">
+        <button type="button" className="btn" onClick={() => onChange({
+          peakPeriods: [...peakPeriods, { days: allDays, start: '', end: '' }]
+        })}>添加峰时时段</button>
+        <button type="button" className="btn" onClick={onPreset}>套用 DeepSeek 官方时段</button>
+      </div>
+      <label>全天谷价日期（可选）
+        <textarea rows={3} value={offPeakDatesText ?? offPeakDates.join('\n')}
+          placeholder={'2026-01-01\n2026-10-01..2026-10-07'}
+          onChange={event => onChange({ offPeakDatesText: event.target.value })} />
+      </label>
+      <p className="muted">每行填写一个日期，或用两个英文句点连接起止日期。</p>
     </fieldset>
   );
 }
@@ -151,11 +218,16 @@ function PricingEditor({ data, onSaved }) {
         body: JSON.stringify({
           timeZone: policy.timeZone.trim(),
           defaults: policy.defaults.map(row => ({ model: row.model.trim(), rates: numericRates(row.rates) })),
-          rules: policy.rules.map(row => ({
-            ...row, provider: row.provider.trim(), model: row.model.trim(),
-            peak: numericRates(row.peak), offPeak: numericRates(row.offPeak),
-            effectiveFrom: row.effectiveFrom || null
-          }))
+          rules: policy.rules.map(row => {
+            const schedule = editableSchedule(row, policy.timeZone);
+            return {
+              provider: row.provider.trim(), model: row.model.trim(), enabled: row.enabled,
+              ...schedule, timeZone: schedule.timeZone.trim(),
+              offPeakDates: row.offPeakDatesText?.split(/\s+/).filter(Boolean) ?? schedule.offPeakDates,
+              peak: numericRates(row.peak), offPeak: numericRates(row.offPeak),
+              effectiveFrom: row.effectiveFrom || null
+            };
+          })
         })
       });
       onSaved(saved);
@@ -205,19 +277,14 @@ function PricingEditor({ data, onSaved }) {
             <div className="pricing-heading">
               <div>
                 <h2 id="rules-title">渠道峰谷价</h2>
-                <p>启用后按调用时间计费。单段谷时可跨午夜，也可以使用 DeepSeek 官方时段。</p>
+                <p>Provider 须与采集上报的渠道 ID 一致。每条规则可独立设置时区和峰时时段。</p>
               </div>
               <button type="button" className="btn" onClick={() => changePolicy({ rules: [...policy.rules, {
                 provider: '', model: '', enabled: false,
                 peak: { ...blankRates }, offPeak: { ...blankRates },
-                offPeakStart: '', offPeakEnd: '', effectiveFrom: null
+                timeZone: policy.timeZone, peakPeriods: [], offPeakDates: [], effectiveFrom: null
               }] })}>添加渠道规则</button>
             </div>
-            <label className="pricing-timezone">
-              计价时区
-              <input required maxLength={64} value={policy.timeZone} placeholder="Asia/Shanghai"
-                onChange={event => changePolicy({ timeZone: event.target.value })} />
-            </label>
             {policy.rules.map((rule, index) => (
               <div className="pricing-entry" key={index}>
                 <div className="pricing-entry-head">
@@ -237,39 +304,16 @@ function PricingEditor({ data, onSaved }) {
                     onChange={event => updateRow('rules', index, { enabled: event.target.checked })} />
                   启用峰谷价
                 </label>
-                <div className="pricing-rates pricing-schedule">
-                  <label>计价时段
-                    <select value={rule.schedule || ''} onChange={event => {
-                      const schedule = event.target.value || undefined;
-                      const isFlash = [deepSeekFlashModel, 'deepseek-v4.1-flash-1017'].includes(rule.model.trim().toLowerCase());
-                      updateRow('rules', index, { schedule,
-                        ...(schedule && isFlash && { peak: { ...deepSeekFlashPrices.peak }, offPeak: { ...deepSeekFlashPrices.offPeak } })
-                      });
-                    }}>
-                      <option value="">每天单段谷时</option>
-                      <option value="deepseek-api">DeepSeek 官方峰谷时段</option>
-                    </select>
-                  </label>
-                  {rule.schedule !== 'deepseek-api' && (
-                    <>
-                      <label>谷时开始
-                        <input type="time" required value={rule.offPeakStart || ''}
-                          onChange={event => updateRow('rules', index, { offPeakStart: event.target.value })} />
-                      </label>
-                      <label>谷时结束
-                        <input type="time" required value={rule.offPeakEnd || ''}
-                          onChange={event => updateRow('rules', index, { offPeakEnd: event.target.value })} />
-                      </label>
-                    </>
-                  )}
-                  <label>生效日期（可选）
-                    <input type="date" value={rule.effectiveFrom || ''}
-                      onChange={event => updateRow('rules', index, { effectiveFrom: event.target.value })} />
-                  </label>
-                </div>
-                {rule.schedule === 'deepseek-api' && (
-                  <p className="muted">北京时间周一至周五 09:00–12:00、14:00–18:00 为峰时。周末、节假日和其余时间用谷价。</p>
-                )}
+                <ScheduleFields schedule={editableSchedule(rule, policy.timeZone)} effectiveFrom={rule.effectiveFrom}
+                  offPeakDatesText={rule.offPeakDatesText}
+                  onChange={changes => updateRow('rules', index, { ...editableSchedule(rule, policy.timeZone), ...changes })}
+                  onPreset={() => {
+                    const isFlash = [deepSeekFlashModel, 'deepseek-v4.1-flash-1017'].includes(rule.model.trim().toLowerCase());
+                    updateRow('rules', index, {
+                      ...deepSeekSchedulePreset, offPeakDatesText: undefined,
+                      ...(isFlash && deepSeekFlashPrices)
+                    });
+                  }} />
                 <RateFields title="峰价" rates={rule.peak}
                   onChange={peak => updateRow('rules', index, { peak })} />
                 <RateFields title="谷价" rates={rule.offPeak}

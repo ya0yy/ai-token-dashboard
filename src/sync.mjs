@@ -4,6 +4,7 @@ import { collectionScopeKey, lockCollectionState } from './collection-state.mjs'
 import { digest, exactColumn } from './sync-journal.mjs';
 
 const LEASE_MS = 120_000; // Each HTTP request times out after 60 seconds.
+const HUB_USAGE_PROTOCOL = 2; // Transmits daily snapshots in addition to call details.
 const emptySnapshot = () => ({ daily: [], time: [], sessions: [] });
 
 function usageOnly({ costUSD, costBasis, pricingVersion, pricingLockedAt, hubRepriced, billedCostUSD, ...row }) {
@@ -16,9 +17,10 @@ async function claim(db, targetKey, scopeKey, owner) {
   [targetKey, scopeKey]);
   await db.run('UPDATE sync_targets SET lease_owner = ?, lease_until = ? WHERE target_key = ? AND lease_until <= ?',
     [owner, Date.now() + LEASE_MS, targetKey, Date.now()]);
-  const target = await db.get('SELECT acknowledged_revision, lease_owner FROM sync_targets WHERE target_key = ?', [targetKey]);
+  const target = await db.get('SELECT acknowledged_revision, usage_protocol, lease_owner FROM sync_targets WHERE target_key = ?', [targetKey]);
   if (target.lease_owner !== owner) throw new Error('Sync already running for this target, device and source; retry after it finishes (or after two minutes following a crash)');
-  return target.acknowledged_revision == null ? null : Number(target.acknowledged_revision);
+  const revision = target.acknowledged_revision == null ? null : Number(target.acknowledged_revision);
+  return { revision, protocol: Number(target.usage_protocol) };
 }
 
 async function renew(db, targetKey, owner) {
@@ -47,10 +49,11 @@ async function capture(db, scope, after, full, resync) {
   });
 }
 
-async function acknowledge(db, targetKey, scopeKey, owner, revision) {
+async function acknowledge(db, targetKey, scopeKey, owner, revision, protocol) {
   await db.transaction(async tx => {
     await renew(tx, targetKey, owner);
-    await tx.run('UPDATE sync_targets SET acknowledged_revision = ? WHERE target_key = ? AND lease_owner = ?', [revision, targetKey, owner]);
+    await tx.run('UPDATE sync_targets SET acknowledged_revision = ?, usage_protocol = ? WHERE target_key = ? AND lease_owner = ?',
+      [revision, protocol, targetKey, owner]);
     // Offline targets retain their progress. New targets always get a baseline,
     // so pruning acknowledged records cannot strand either kind of receiver.
     const { floor } = await tx.get('SELECT MIN(COALESCE(acknowledged_revision, 0)) AS floor FROM sync_targets WHERE scope_key = ?', [scopeKey]);
@@ -72,11 +75,15 @@ export async function syncDatabase({ db, url, token, device, source, full = fals
   for (const scope of selected) {
     const scopeKey = collectionScopeKey(scope), targetKey = digest([target.href, scope.device, scope.source]);
     const owner = randomUUID();
-    const after = await claim(db, targetKey, scopeKey, owner);
+    const { revision: after, protocol: previousProtocol } = await claim(db, targetKey, scopeKey, owner);
+    const protocol = hubPricing ? HUB_USAGE_PROTOCOL : previousProtocol;
+    const upgrade = protocol !== previousProtocol;
     try {
-      const plan = await capture(db, scope, after, full, resync);
+      // 新协议补传之前跳过的日汇总，首次使用时重发本机基线。
+      const plan = await capture(db, scope, after, full, resync || upgrade);
       const send = async payload => {
-        if (hubPricing) payload = { mode: payload.mode, scopes: payload.scopes, pricing: 'hub', time: payload.time.map(usageOnly) };
+        if (hubPricing) payload = { mode: payload.mode, scopes: payload.scopes, pricing: 'hub',
+          daily: payload.daily.map(usageOnly), time: payload.time.map(usageOnly) };
         const body = JSON.stringify(payload);
         if (Buffer.byteLength(body) > 48 * 1024 * 1024) throw new Error('Replacement exceeds 48 MiB; rebuild one source at a time with --source');
         await renew(db, targetKey, owner);
@@ -87,19 +94,24 @@ export async function syncDatabase({ db, url, token, device, source, full = fals
         });
         if (!response.ok) {
           if (hubPricing && [404, 405].includes(response.status)) throw new Error('上报失败：请先升级 Hub 以支持服务端入库计价。');
-          throw new Error(`Upload failed: HTTP ${response.status}`);
+          const error = await response.json().catch(() => null);
+          if (hubPricing && error?.error === 'Hub 计价上报仅接受调用明细') {
+            throw new Error('上报失败：请先升级 Hub 以接收日汇总。');
+          }
+          throw new Error(`上报失败（HTTP ${response.status}），请检查 Hub 日志。`);
         }
         if ((await response.json()).ok !== true) throw new Error('Hub did not acknowledge upload');
         result.requests++;
       };
       if (plan.mode === 'full') await send({ mode: 'full', scopes: [scope], ...plan.snapshot });
       else {
-        const count = hubPricing ? plan.snapshot.time.length : Math.max(...Object.values(plan.snapshot).map(rows => rows.length));
+        const { daily, time, sessions } = plan.snapshot;
+        const count = Math.max(daily.length, time.length, hubPricing ? 0 : sessions.length);
         for (let i = 0; i < count; i += 1000) await send({ mode: 'incremental',
           ...Object.fromEntries(Object.entries(plan.snapshot).map(([kind, rows]) => [kind, rows.slice(i, i + 1000)])) });
       }
-      if (after !== plan.revision || plan.mode === 'full') await acknowledge(db, targetKey, scopeKey, owner, plan.revision);
-      for (const kind of hubPricing ? ['time'] : Object.keys(result.rows)) result.rows[kind] += plan.snapshot[kind].length;
+      if (after !== plan.revision || upgrade || plan.mode === 'full') await acknowledge(db, targetKey, scopeKey, owner, plan.revision, protocol);
+      for (const kind of hubPricing ? ['daily', 'time'] : Object.keys(result.rows)) result.rows[kind] += plan.snapshot[kind].length;
     } finally {
       await db.run('UPDATE sync_targets SET lease_owner = NULL, lease_until = 0 WHERE target_key = ? AND lease_owner = ?', [targetKey, owner]);
     }

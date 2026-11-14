@@ -289,7 +289,7 @@ docker compose -f docker-compose.source.yml up -d
 - `data/pricing-litellm.json`
 - `data/pricing-openrouter.json`
 
-「模型定价」页（`/pricing`）按美元 / 百万 token 显示内置默认价，可为模型设置覆盖价。渠道规则默认关闭，勾选后才按 `Provider + 模型 ID` 和调用时间选择峰价或谷价。Provider 使用事件明细中的原值，谷时含开始、不含结束，支持跨午夜。未匹配规则、Provider 缺失或缺少调用时间的记录使用模型默认价。
+「模型定价」页（`/pricing`）按美元 / 百万 token 显示内置默认价，可为模型设置覆盖价。渠道规则默认关闭，勾选后按 `Provider + 模型 ID` 和调用时间选价。Provider 填采集上报的渠道 ID。每条规则可设置独立时区、多段峰时及适用星期，开始时间计入峰时，结束时间转为谷时。跨午夜的峰时按开始当天的星期设置，也可以指定全天用谷价的日期。DeepSeek 官方时段可套用后编辑。缺少 Provider、匹配规则或调用时间时使用模型默认价。
 
 规则保存到 Hub 的 `data/pricing-rules.json`。使用 `--push` 的新版采集端上报用量和有明确来源的供应商账单金额。Hub 按实际调用时间在入库时估算费用，保存价格版本，并保留重复上报的调用金额。升级时先更新 Hub，旧版采集器仍可使用原协议上报。独立本机采集继续使用本地价格，直连共享数据库可设置 `PRICING_SNAPSHOT_URL`。
 
@@ -343,7 +343,7 @@ npm run collect -- --source "Codex CLI" --full --apply
 - 采集器读取**本机文件**；使用本地 SQLite 且未设置远程价格或推送地址时，采集不联网。配置远程 `DATABASE_URL` 后，采集会连接并写入该数据库。
 - `npm run pricing:update` 会主动访问上游定价源，用于刷新本地价格缓存。
 - 除非显式传入 `--push`，否则不会上传任何数据。
-- `--push` 将调用明细发送到指定 Hub，由 Hub 入库计价。
+- `--push` 将调用明细、明确的供应商账单金额和每日 Token 汇总发送到指定 Hub。Hub 按逐笔明细计价，只有日汇总的用量保留到日期粒度。
 - 默认只监听本机；外部监听必须设置 token，看板、读取 API 和写入 API 均鉴权。
 - `POST /api/collect` 仅允许从本机触发，避免远程页面随意扫描你的本地日志。
 - 不要将 `data/usage.sqlite`、`.env` 或任何采集导出文件提交到 Git。

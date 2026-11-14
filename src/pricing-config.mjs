@@ -3,7 +3,8 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { validDate } from './ingest-validation.mjs';
 import { loadPricing, priceFields, pricingRuleModel } from './pricing.mjs';
-import { deepSeekApiSchedule } from './deepseek-schedule.mjs';
+import { deepSeekApiSchedule, deepSeekSchedulePreset } from './deepseek-schedule.mjs';
+import { allDays } from './pricing-schedule.mjs';
 import { normalizeModelForGrouping } from './collectors/utils.mjs';
 import { resolveDisplayTz } from './timezone.mjs';
 
@@ -36,19 +37,45 @@ function rates(value) {
   return Object.fromEntries(priceFields.map(key => [key, value[key]]));
 }
 
-export function validatePricingPolicy(value) {
-  if (!Array.isArray(value?.defaults) || !Array.isArray(value?.rules)) throw new Error('价格规则格式无效');
-  const timeZone = identifier(value.timeZone, '计价时区');
+const clock = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function validateTimeZone(value) {
+  const timeZone = identifier(value, '计价时区');
+  if (!/^[A-Za-z][A-Za-z0-9_+/-]{0,63}$/.test(timeZone)) throw new Error('计价时区须为 IANA 时区');
   try { new Intl.DateTimeFormat('en', { timeZone }); }
   catch { throw new Error('计价时区无效，请使用 Asia/Shanghai 等 IANA 时区'); }
-  if (!/^[A-Za-z][A-Za-z0-9_+/-]*$/.test(timeZone)) throw new Error('计价时区须为 IANA 时区');
+  return timeZone;
+}
+
+function validatePeakSchedule({ timeZone, peakPeriods, offPeakDates = [] }) {
+  if (!Array.isArray(peakPeriods)) throw new Error('请填写有效的峰时时段');
+  const periods = peakPeriods.map(period => {
+    const { days, start, end } = period || {};
+    if (!Array.isArray(days) || !days.length || days.some(day => !allDays.includes(day))) {
+      throw new Error('每段峰时至少选择一个星期');
+    }
+    if (typeof start !== 'string' || typeof end !== 'string' || !clock.test(start) || !clock.test(end) || start === end) {
+      throw new Error('请填写不同的峰时开始与结束时间（HH:mm）');
+    }
+    return { days: [...new Set(days)].sort(), start, end };
+  });
+  if (!Array.isArray(offPeakDates) || offPeakDates.some(range => {
+    if (typeof range !== 'string') return true;
+    const [start, end = start, extra] = range.split('..');
+    return extra !== undefined || !validDate(start) || !validDate(end) || start > end;
+  })) throw new Error('全天谷价日期须使用 YYYY-MM-DD 或 YYYY-MM-DD..YYYY-MM-DD');
+  return { timeZone: validateTimeZone(timeZone), peakPeriods: periods, offPeakDates: [...new Set(offPeakDates)] };
+}
+
+export function validatePricingPolicy(value) {
+  if (!Array.isArray(value?.defaults) || !Array.isArray(value?.rules)) throw new Error('价格规则格式无效');
+  const timeZone = validateTimeZone(value.timeZone);
   const defaults = value.defaults.map(row => ({
     model: identifier(row?.model, '模型 ID').toLowerCase(), rates: rates(row.rates)
   }));
   if (new Set(defaults.map(row => normalizeModelForGrouping(row.model))).size !== defaults.length) {
     throw new Error('同一模型只能设置一条默认价格（包括不同版本别名）');
   }
-  const clock = /^([01]\d|2[0-3]):[0-5]\d$/;
   const rules = value.rules.map(row => {
     const provider = identifier(row?.provider, 'Provider');
     const model = identifier(row.model, '模型 ID').toLowerCase();
@@ -56,6 +83,7 @@ export function validatePricingPolicy(value) {
     const { offPeakStart, offPeakEnd, effectiveFrom = null, schedule } = row;
     if (effectiveFrom !== null && !validDate(effectiveFrom)) throw new Error('生效日期无效');
     const price = { provider, model, enabled: row.enabled, peak: rates(row.peak), offPeak: rates(row.offPeak) };
+    if (row.peakPeriods !== undefined) return { ...price, ...validatePeakSchedule(row), effectiveFrom };
     if (schedule === deepSeekApiSchedule) return { ...price, schedule, effectiveFrom };
     if (schedule != null) throw new Error('不支持的峰谷时段');
     if (typeof offPeakStart !== 'string' || typeof offPeakEnd !== 'string'
@@ -70,6 +98,22 @@ export function validatePricingPolicy(value) {
   return { timeZone, defaults, rules };
 }
 
+function compatibleRule(rule, timeZone, legacySchedulesOnly) {
+  if (!rule.peakPeriods) return legacySchedulesOnly && rule.schedule ? [] : [rule];
+
+  const { timeZone: zone, peakPeriods, offPeakDates, ...price } = rule;
+  const [period] = peakPeriods;
+  if (zone === timeZone && peakPeriods.length === 1 && period.days.length === allDays.length && !offPeakDates.length) {
+    const { effectiveFrom, ...rates } = price;
+    return [{ ...rates, offPeakStart: period.end, offPeakEnd: period.start, effectiveFrom }];
+  }
+  if (!legacySchedulesOnly && JSON.stringify({ timeZone: zone, peakPeriods, offPeakDates }) === JSON.stringify(deepSeekSchedulePreset)) {
+    const { effectiveFrom, ...rates } = price;
+    return [{ ...rates, schedule: deepSeekApiSchedule, effectiveFrom }];
+  }
+  return [];
+}
+
 export async function readPricingPolicy() {
   try { return validatePricingPolicy(JSON.parse(await readFile(policyPath(), 'utf8'))); }
   catch (error) {
@@ -79,12 +123,14 @@ export async function readPricingPolicy() {
 }
 
 // 整份规则和内置目录共同决定版本，目录更新后也能区分计价依据。
-export async function currentPricingSnapshot({ legacySchedulesOnly = false } = {}) {
+export async function currentPricingSnapshot({ legacySchedulesOnly = false, customSchedules = true } = {}) {
   const [policy, litellm, openrouter] = await Promise.all([
     readPricingPolicy(), readCatalog('litellm'), readCatalog('openrouter')
   ]);
-  // 旧采集器只能解析每日单段谷时。兼容快照的版本基于实际发送的规则。
-  const compatiblePolicy = legacySchedulesOnly ? { ...policy, rules: policy.rules.filter(rule => !rule.schedule) } : policy;
+  // 只向旧采集器发送它们能等价计价的规则。版本基于实际发送的快照。
+  const compatiblePolicy = customSchedules && !legacySchedulesOnly ? policy : {
+    ...policy, rules: policy.rules.flatMap(rule => compatibleRule(rule, policy.timeZone, legacySchedulesOnly))
+  };
   const snapshot = { policy: compatiblePolicy, litellm, openrouter };
   return { ...snapshot, version: hash(JSON.stringify(snapshot)) };
 }
@@ -136,6 +182,7 @@ export async function loadCollectionPricing({ push, token, requireFresh = false 
   }
   const endpoint = push ? new URL('pricing/snapshot', target) : target;
   endpoint.searchParams.set('schedules', 'extended');
+  endpoint.searchParams.set('ruleSchedules', 'custom');
   const pricingToken = token || process.env.PRICING_SNAPSHOT_TOKEN;
   const cachePath = resolve('data', 'pricing-cache', `${hash(endpoint.href)}.json`);
   let cached = null;

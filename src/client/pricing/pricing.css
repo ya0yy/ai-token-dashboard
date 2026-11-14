@@ -61,7 +61,8 @@
 }
 
 .pricing-panel input:not([type="checkbox"]),
-.pricing-panel select {
+.pricing-panel select,
+.pricing-panel textarea {
   width: 100%;
   min-width: 0;
   min-height: 36px;
@@ -149,13 +150,37 @@
 }
 
 .pricing-rate-fields,
-.pricing-checkbox,
-.pricing-timezone {
+.pricing-checkbox {
   margin-top: 12px;
 }
 
-.pricing-timezone {
-  max-width: 240px;
+.pricing-period {
+  min-width: 0;
+  margin: 10px 0;
+  padding: 8px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.pricing-weekdays,
+.pricing-period-times,
+.pricing-period-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
+}
+
+.pricing-weekdays .pricing-checkbox {
+  margin-top: 0;
+}
+
+.pricing-period-times label {
+  flex: 1 1 130px;
+}
+
+.pricing-period-actions {
+  margin: 12px 0;
 }
 
 .pricing-rate-fields legend {

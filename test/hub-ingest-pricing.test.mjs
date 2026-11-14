@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { openDb, withReadSnapshot } from '../src/db.mjs';
 import { readSnapshot, writeSnapshot } from '../src/usage-store.mjs';
 import { syncDatabase } from '../src/sync.mjs';
+import { deepSeekSchedulePreset } from '../src/deepseek-schedule.mjs';
 import { event, startServer, usage } from './helpers/server.mjs';
 
 const model = 'deepseek-v4.1-flash-1017';
@@ -50,9 +51,9 @@ test('Hub 按真实调用时段计价，保留确认的零账单和重复上报�
   const sent = [];
   await sync({ fetcher: (url, options) => { sent.push(JSON.parse(options.body)); return fetch(url, options); } });
   assert.equal(sent[0].pricing, 'hub');
-  assert.equal(sent[0].daily, undefined);
   assert.equal(sent[0].sessions, undefined);
   assert.ok(sent[0].time.every(row => !Object.hasOwn(row, 'costUSD')));
+  assert.ok(sent[0].daily.every(row => !Object.hasOwn(row, 'costUSD')));
   assert.equal(sent[0].time.find(row => row.eventKey === 'bill').billedCostUSD, 0);
   await publish(hub, 100);
   await sync({ resync: true });
@@ -68,6 +69,94 @@ test('Hub 按真实调用时段计价，保留确认的零账单和重复上报�
   assert.equal(byKey.bill.costBasis, 'recorded');
   assert.equal(stored.daily[0].costUSD, 35);
   assert.equal(stored.daily[0].totalTokens, 4_000_000);
+});
+
+test('Hub 接收没有逐笔明细的日汇总，到齐后按调用计价且不重复记用量', { timeout: 20_000 }, async t => {
+  const hub = await startServer();
+  const db = await openDb(join(hub.root, 'usage.sqlite'), { readOnly: true });
+  const local = await openDb(join(hub.root, 'collector.sqlite'));
+  t.after(async () => { await local.close(); await db.close(); await hub.close(); });
+  await publish(hub);
+  const gemini = { ...scope, source: 'Gemini CLI' };
+  const aggregated = { ...gemini, usageDate, model, inputTokens: 2_000_000, totalTokens: 2_000_000,
+    costUSD: 400, costBasis: 'estimated', pricingVersion: 'collector-estimate' };
+  const snapshot = (daily, time = []) => writeSnapshot(local, { daily, time, sessions: [] });
+  const sync = options => syncDatabase({ db: local, url: hub.base + '/api/ingest', ...gemini, hubPricing: true, ...options });
+  const first = call('first', { ...gemini, eventTime: '2026-10-27T02:00:00.000Z' });
+  const latest = () => readSnapshot(db, scope.device, gemini.source);
+  await snapshot([aggregated]);
+  assert.equal((await sync()).rows.daily, 1);
+  let stored = await latest();
+  assert.equal(stored.time.length, 0);
+  assert.equal(stored.daily[0].totalTokens, 2_000_000);
+  assert.equal(stored.daily[0].costUSD, 0);
+  assert.equal(stored.daily[0].costBasis, 'unknown');
+  await snapshot([], [first]);
+  await sync();
+  stored = await latest();
+  assert.equal(stored.daily[0].totalTokens, 2_000_000);
+  assert.equal(stored.daily[0].costBasis, 'unknown');
+  assert.equal(stored.daily[0].costUSD, 10);
+  await snapshot([], [{ ...first, eventKey: 'second' }]);
+  await sync();
+  assert.equal((await sync({ resync: true })).rows.time, 2);
+  stored = await latest();
+  assert.equal(stored.time.length, 2);
+  assert.equal(stored.daily[0].totalTokens, 2_000_000);
+  assert.equal(stored.daily[0].costUSD, 20);
+});
+
+test('Hub 补录旧日汇总的调用时保留原有日费用', { timeout: 20_000 }, async t => {
+  const hub = await startServer();
+  const db = await openDb(join(hub.root, 'usage.sqlite'), { readOnly: true });
+  t.after(async () => { await db.close(); await hub.close(); });
+  await publish(hub);
+  const row = call('historical', { source: 'Gemini CLI', costUSD: 1.5, costBasis: 'estimated' });
+  assert.equal((await hub.ingest({ daily: [row] })).status, 200);
+  await post(hub, '/api/ingest', { pricing: 'hub', time: [row] }, 'PUT');
+  assert.equal((await readSnapshot(db)).daily[0].costUSD, 1.5);
+  await post(hub, '/api/ingest', { pricing: 'hub', time: [row] }, 'PUT');
+  assert.equal((await readSnapshot(db)).daily[0].costUSD, 1.5);
+});
+
+test('有同步进度的采集器升级后补传日汇总并沿用原同步目标', { timeout: 20_000 }, async t => {
+  const hub = await startServer();
+  const db = await openDb(join(hub.root, 'usage.sqlite'), { readOnly: true });
+  const local = await openDb(join(hub.root, 'collector.sqlite'));
+  t.after(async () => { await local.close(); await db.close(); await hub.close(); });
+  const options = { db: local, url: hub.base + '/api/ingest', ...scope };
+  await writeSnapshot(local, { daily: [usage(scope)], time: [], sessions: [] });
+  await syncDatabase({ ...options, fetcher: async () => Response.json({ ok: true }) });
+  assert.equal((await local.all('SELECT * FROM sync_changes')).length, 0);
+  assert.equal((await syncDatabase({ ...options, hubPricing: true })).rows.daily, 1);
+  assert.equal((await local.all('SELECT * FROM sync_targets')).length, 1);
+  assert.equal((await syncDatabase({ ...options, hubPricing: true })).requests, 0);
+  assert.equal((await readSnapshot(db)).daily[0].totalTokens, 110);
+});
+
+test('Hub 保留跨批次才收齐的日用量和已确认账单', { timeout: 20_000 }, async t => {
+  const hub = await startServer();
+  const db = await openDb(join(hub.root, 'usage.sqlite'), { readOnly: true });
+  const local = await openDb(join(hub.root, 'collector.sqlite'));
+  t.after(async () => { await local.close(); await db.close(); await hub.close(); });
+  await publish(hub);
+  const daily = [{ ...scope, usageDate, model, inputTokens: 1001, totalTokens: 1001 }];
+  const time = Array.from({ length: 1001 }, (_, i) => call(String(i), { inputTokens: 1, totalTokens: 1 }));
+  time.push(call('charge', { inputTokens: 0, totalTokens: 0, billedCostUSD: 0.25 }));
+  await writeSnapshot(local, { daily, time, sessions: [] });
+  const options = { db: local, url: hub.base + '/api/ingest', ...scope, hubPricing: true };
+  let requests = 0;
+  await assert.rejects(syncDatabase({ ...options, fetcher: (url, options) => {
+    if (++requests === 2) throw new Error('lost connection');
+    return fetch(url, options);
+  } }), /lost connection/);
+  assert.equal((await readSnapshot(db)).daily[0].totalTokens, 1001);
+  assert.equal((await syncDatabase(options)).requests, 2);
+  assert.equal((await syncDatabase(options)).requests, 0);
+  const stored = await readSnapshot(db);
+  assert.equal(stored.time.length, 1002);
+  assert.equal(stored.daily[0].totalTokens, 1001);
+  assert.ok(Math.abs(stored.daily[0].costUSD - 0.26001) < 1e-10);
 });
 
 test('定价页主动补算旧 Pi 零估价，预览期间保留原费用，并保护已确认的零账单', { timeout: 20_000 }, async t => {
@@ -135,6 +224,20 @@ test('DeepSeek 官方峰谷规则按北京时间计费，历史预览可为缺�
     'first-peak': 0.3, midday: 0.15, 'second-peak': 0.3, evening: 0.15,
     weekend: 0.15, holiday: 0.15, 'next-year-holiday': 0.15
   });
+
+  const { schedule, ...originalRule } = rule;
+  const customRule = { ...originalRule, ...deepSeekSchedulePreset };
+  await post(hub, '/api/pricing', { timeZone: 'UTC', defaults: [{ model, rates: rates(9) }], rules: [customRule, {
+    ...originalRule, provider: 'aliyun-token-plan', timeZone: 'America/Los_Angeles',
+    peakPeriods: [{ days: [1], start: '16:00', end: '02:00' }]
+  }] }, 'PUT');
+  const fullSnapshot = await snapshot('?schedules=extended&ruleSchedules=custom');
+  assert.equal(fullSnapshot.policy.rules[0].peakPeriods.length, 2);
+  assert.equal(fullSnapshot.policy.rules[1].timeZone, 'America/Los_Angeles');
+  const olderSnapshot = await snapshot('?schedules=extended');
+  assert.equal(olderSnapshot.policy.rules.length, 1);
+  assert.equal(olderSnapshot.policy.rules[0].schedule, 'deepseek-api');
+  assert.deepEqual((await snapshot('')).policy.rules, []);
 
   const missing = call('without-provider', { device: 'legacy', costBasis: 'recorded', costUSD: 0 });
   const known = { ...missing, eventKey: 'with-provider', provider: 'another-provider' };

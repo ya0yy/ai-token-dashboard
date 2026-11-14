@@ -10,7 +10,7 @@ import { localDateFromTimestamp, normalizeModelForGrouping } from './utils.mjs';
 
 export const CLIENT_KEY = 'pi';
 export const SOURCE_LABEL = 'Pi Agent';
-const CACHE_VERSION = 4;
+const CACHE_VERSION = 5;
 
 export function sessionRoots() {
   const sessionDir = expandPath(process.env.PI_CODING_AGENT_SESSION_DIR);
@@ -123,16 +123,16 @@ export async function parseSessionFile(filePath, { omp = false } = {}) {
     const time = entryTime ?? messageTime;
     if (time === null) continue;
     const tokens = tokensFromUsage(usage);
-    if (!Object.values(tokens).some(value => value > 0)) continue;
+    const cost = recordedCost(usage);
+    const reported = usage.cost?.totalFromProvider === true;
+    if (!Object.values(tokens).some(value => value > 0) && !(reported && cost > 0)) continue;
     // Tool usage can describe another model; never infer that model from the
     // caller. A missing tool model remains explicitly unknown.
     const routing = message?.role === 'toolResult' || isModelUsage ? {} : state;
     const rawModel = text(message?.responseModel) || text(message?.model)
       || text(row.model) || routing.model || 'unknown';
     const provider = text(message?.provider) || text(row.provider) || routing.provider || null;
-    const cost = recordedCost(usage);
     // Pi 标记渠道真实金额。OMP 的部分网关会把账单写入 total，但旧日志没有来源标记。
-    const reported = usage.cost?.totalFromProvider === true;
     const ambiguous = omp && usage.cost?.totalFromProvider == null
       && ['openrouter', 'cline-pass'].includes(provider);
     const logCostBasis = cost == null ? null : reported ? 'recorded' : ambiguous ? 'legacy_unknown' : 'estimated';

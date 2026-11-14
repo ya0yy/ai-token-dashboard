@@ -67,6 +67,17 @@ test('total-only usage remains unclassified rather than inventing a billable tok
   });
 });
 
+test('Pi 只保留明确由供应商确认的无 Token 费用', async () => {
+  const charge = totalFromProvider => ({ ...reply(String(totalFromProvider)).message,
+    usage: { cost: { total: 0.25, totalFromProvider } } });
+  await withSessions({ 's.jsonl': [header('s'), reply('confirmed', { message: charge(true) }),
+    reply('estimate', { message: charge(false) })] }, async () => {
+    const result = await collect();
+    assert.equal(result.eventsJson.events.length, 1);
+    assert.equal(result.eventsJson.events[0].billedCostUSD, 0.25);
+  });
+});
+
 test('zero cost is retained; missing and invalid costs use per-call pricing', async () => {
   const messages = [0, undefined, -1, 'invalid'].map((cost, index) => reply(`a${index}`, {
     message: { role: 'assistant', model: 'model-one', usage: { ...usage, cost: { total: cost } } }

@@ -30,7 +30,7 @@ const device = args.device || hostname();
 const preview = args.full && !args.apply || args.dryRun;
 const pricingData = args.push ? null : await loadCollectionPricing(args);
 const db = await openDb(args.db, { readOnly: Boolean(preview) });
-// Hub 依赖逐笔调用生成日汇总。全量替换也必须使用完整明细。
+// 上传和全量替换都保留可读取的全部调用明细。
 if (args.full || args.push) process.env.TIME_USAGE_HISTORY_DAYS = 'Infinity';
 const collection = { collectedAt: new Date().toISOString(), scopes: [] };
 
@@ -39,7 +39,7 @@ try {
   if (args.push && !preview) {
     const result = await syncDatabase({ db, url: args.push, token: args.token, device, source: args.source,
       full: Boolean(args.full), resync: Boolean(args.resync), scopes: collection.scopes, hubPricing: true });
-    console.log(`[用量上报] 由 Hub 入库计价，请求数: ${result.requests}，调用数: ${result.rows.time}`);
+    console.log(`[用量上报] 由 Hub 入库计价，请求数: ${result.requests}，日汇总数: ${result.rows.daily}，调用数: ${result.rows.time}`);
   }
 } finally { await db.close(); }
 
@@ -159,7 +159,7 @@ function normalizeTimeRows(json, deviceName) {
       pricingVersion: entry.costBasis === 'recorded' || entry.pricingVersion === null ? null : pricingData?.version ?? null,
       ...(entry.logEstimateUSD != null ? { logEstimateUSD: entry.logEstimateUSD } : {})
     };
-  }).filter(row => row.eventTime && row.usageDate && row.totalTokens > 0);
+  }).filter(row => row.eventTime && row.usageDate && (row.totalTokens > 0 || row.billedCostUSD > 0));
 }
 
 function normalizeEventTime(value) {

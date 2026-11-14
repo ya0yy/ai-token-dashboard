@@ -19,16 +19,18 @@
  */
 
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join, extname, basename } from 'node:path';
+import { join, extname, basename, relative } from 'node:path';
 import { calculateCost } from '../pricing.mjs';
 import { configuredPath } from '../collector-config.mjs';
+import { projectPath } from '../project-identity.mjs';
 import { localDateFromTimestamp, normalizeModelForGrouping } from './utils.mjs';
 import { cachedParse, flushCache } from './parse-cache.mjs';
 
 export const CLIENT_KEY = 'gemini';
 export const SOURCE_LABEL = 'Gemini CLI';
-const CACHE_VERSION = 2;   // bump when parsed event shape changes
+const CACHE_VERSION = 3;   // bump when parsed event shape changes
 
 // ---------------------------------------------------------------------------
 // Path resolution
@@ -142,52 +144,6 @@ function normaliseSessionInputAndCache(input, cached, output, reasoning, tool, t
 // Session-format JSON parser  (full GeminiSession structure)
 // ---------------------------------------------------------------------------
 
-function parseSessionJson(obj, fallbackDate) {
-  const events = [];
-  const sessionId = obj.sessionId || obj.session_id || 'unknown';
-  const messages = Array.isArray(obj.messages) ? obj.messages : [];
-
-  for (const msg of messages) {
-    if (msg.type !== 'gemini') continue;
-    const model  = msg.model;
-    if (!model) continue;
-    const tokens = msg.tokens;
-    if (!tokens) continue;
-
-    let date = fallbackDate;
-    if (msg.timestamp) {
-      date = localDateFromTimestamp(msg.timestamp, fallbackDate);
-    }
-
-    const input     = pos(tokens.input);
-    const output    = pos(tokens.output);
-    const cached    = pos(tokens.cached);
-    const reasoning = pos(tokens.thoughts);
-    const tool      = pos(tokens.tool);
-    const total     = tokens.total != null ? pos(tokens.total) : null;
-
-    const { netInput, cacheRead } = normaliseSessionInputAndCache(
-      input, cached, output, reasoning, tool, total
-    );
-
-    events.push({
-      sessionId,
-      date,
-      eventTime: msg.timestamp,
-      model: normalizeModelForGrouping(model),
-      tokens: {
-        input:     netInput + tool,   // tool tokens count as input (mirrors Rust)
-        output,
-        cacheRead,
-        cacheWrite: 0,
-        reasoning
-      }
-    });
-  }
-
-  return events;
-}
-
 // ---------------------------------------------------------------------------
 // Headless JSON parser  (stats object)
 // ---------------------------------------------------------------------------
@@ -241,21 +197,24 @@ function parseHeadlessStats(stats, modelHint, date, sessionId) {
 // JSON file parser  (handles both full-session and headless formats)
 // ---------------------------------------------------------------------------
 
-async function parseJsonFile(filePath, fallbackDate, sessionId) {
+async function parseJsonFile(filePath, fallbackDate, fileSessionId) {
   const text = await safeReadFile(filePath);
   if (!text) return [];
 
   let obj;
   try { obj = JSON.parse(text); } catch { return []; }
+  if (!obj || typeof obj !== 'object') return [];
+  const sessionId = obj.sessionId || obj.session_id || fileSessionId;
 
   // Full session format
-  if (obj.sessionId || obj.session_id) {
-    return parseSessionJson(obj, fallbackDate);
+  if (Array.isArray(obj.messages)) {
+    return obj.messages.flatMap((message, index) => message?.type === 'gemini'
+      ? parseSingleGeminiEvent(message, sessionId, fallbackDate, index) : []);
   }
 
   // Direct gemini event
   if (obj.type === 'gemini') {
-    return parseSingleGeminiEvent(obj, sessionId, fallbackDate);
+    return parseSingleGeminiEvent(obj, sessionId, fallbackDate, 0);
   }
 
   // Headless: stats object
@@ -269,12 +228,13 @@ async function parseJsonFile(filePath, fallbackDate, sessionId) {
   return [];
 }
 
-function parseSingleGeminiEvent(obj, sessionId, fallbackDate) {
+function parseSingleGeminiEvent(obj, sessionId, fallbackDate, index) {
   const model = typeof obj.model === 'string' ? obj.model : null;
   const tokens = obj.tokens;
   if (!model || !tokens) return [];
 
-  const date = extractDateFromValue(obj) ?? fallbackDate;
+  const eventTime = obj.timestamp ?? obj.created_at;
+  const eventDate = localDateFromTimestamp(eventTime, null);
 
   const input     = pos(tokens.input);
   const output    = pos(tokens.output);
@@ -289,8 +249,10 @@ function parseSingleGeminiEvent(obj, sessionId, fallbackDate) {
 
   return [{
     sessionId,
-    date,
-    eventTime: obj.timestamp ?? obj.created_at,
+    date: eventDate ?? fallbackDate,
+    eventTime: eventDate ? eventTime : null,
+    messageId: typeof obj.id === 'string' && obj.id ? obj.id : null,
+    index,
     model: normalizeModelForGrouping(model),
     tokens: { input: netInput + tool, output, cacheRead, cacheWrite: 0, reasoning }
   }];
@@ -307,15 +269,15 @@ async function parseJsonlFile(filePath, fallbackDate) {
   let sessionId = basename(filePath, extname(filePath));
   let currentModel = null;
   const events = [];
-  // Track direct message IDs for dedup (Gemini may emit the same ID twice with updated data)
-  const directMsgIndex = new Map();  // id → index in events
+  const summaries = new Map();
 
-  for (const raw of text.split('\n')) {
+  for (const [index, raw] of text.split('\n').entries()) {
     const line = raw.trim();
     if (!line) continue;
 
     let obj;
     try { obj = JSON.parse(line); } catch { continue; }
+    if (!obj || typeof obj !== 'object') continue;
 
     const type = obj.type;
 
@@ -335,25 +297,7 @@ async function parseJsonlFile(filePath, fallbackDate) {
     if (type === 'gemini') {
       if (typeof obj.model === 'string') currentModel = obj.model;
 
-      const parsed = parseSingleGeminiEvent(
-        obj,
-        sessionId,
-        extractDateFromValue(obj) ?? fallbackDate
-      );
-      if (parsed.length > 0) {
-        const msgId = typeof obj.id === 'string' ? obj.id : null;
-        if (msgId) {
-          if (directMsgIndex.has(msgId)) {
-            // Replace with updated data
-            events[directMsgIndex.get(msgId)] = parsed[0];
-          } else {
-            directMsgIndex.set(msgId, events.length);
-            events.push(parsed[0]);
-          }
-        } else {
-          events.push(parsed[0]);
-        }
-      }
+      events.push(...parseSingleGeminiEvent(obj, sessionId, fallbackDate, index));
       continue;
     }
 
@@ -362,12 +306,15 @@ async function parseJsonlFile(filePath, fallbackDate) {
     if (stats) {
       const date      = extractDateFromValue(obj) ?? fallbackDate;
       const modelHint = currentModel;
-      const parsed    = parseHeadlessStats(stats, modelHint, date, sessionId);
-      events.push(...parsed);
+      for (const row of parseHeadlessStats(stats, modelHint, date, sessionId)) {
+        summaries.set(JSON.stringify([row.sessionId, row.model]), row);
+      }
     }
   }
 
-  return events;
+  // JSONL 的结果统计是本次会话的汇总，同一模型有调用日志时以调用为准。
+  for (const row of events) summaries.delete(JSON.stringify([row.sessionId, row.model]));
+  return [...events, ...summaries.values()];
 }
 
 /**
@@ -430,41 +377,28 @@ export async function collect(pricingData = null) {
 
   const dailyMap = new Map();
   const wmMap    = new Map();
+  const parsed = new Map();
+  const timeEvents = [];
+  const cutoff = Date.now() - Number(process.env.TIME_USAGE_HISTORY_DAYS || Infinity) * 86_400_000;
 
-  /**
-   * Accumulate parsed events into the two aggregate maps.
-   */
-  function accumulate(events) {
-    for (const { sessionId, date, model, tokens, eventTime } of events) {
-      const cost = calculateCost(model, tokens, pricingData, null, { eventTime });
-      // Daily
-      const dk = `${date}::${model}`;
-      if (!dailyMap.has(dk)) dailyMap.set(dk, { date, model, ...zero(), cost: 0 });
-      addInto(dailyMap.get(dk), tokens);
-      dailyMap.get(dk).cost += cost;
-
-      // Workspace+model (use sessionId as workspace key for Gemini)
-      const wmk = `${sessionId}::${model}`;
-      if (!wmMap.has(wmk)) {
-        wmMap.set(wmk, {
-          workspace:      sessionId,
-          workspaceLabel: sessionId,
-          model,
-          ...zero(),
-          cost: 0
-        });
-      }
-      addInto(wmMap.get(wmk), tokens);
-      wmMap.get(wmk).cost += cost;
+  async function readEvents(filePath, workspace = null) {
+    const fileKey = relative(tmpDir, filePath).replaceAll('\\', '/');
+    for (const row of await cachedParse(CLIENT_KEY, CACHE_VERSION, filePath, parseGeminiFile)) {
+      const identity = row.messageId ? [row.sessionId, 'message', row.messageId]
+        : [fileKey, row.index ?? 'summary', row.index == null ? row.model : null];
+      const key = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+      const previous = parsed.get(key);
+      const event = previous?.eventTime && !row.eventTime ? previous : row;
+      parsed.set(key, { ...event, workspace: workspace ?? previous?.workspace ?? null });
     }
   }
 
-  for (const entry of topEntries) {
+  for (const entry of topEntries.sort((a, b) => a.name.localeCompare(b.name))) {
     const entryPath = join(tmpDir, entry.name);
 
     if (entry.isFile() && isAcceptedFile(entry, /* parentName */ '')) {
       // Legacy root-level session file
-      accumulate(await cachedParse(CLIENT_KEY, CACHE_VERSION, entryPath, parseGeminiFile));
+      await readEvents(entryPath);
       continue;
     }
 
@@ -472,25 +406,45 @@ export async function collect(pricingData = null) {
       // Modern layout: <hash>/chats/
       const chatsDir     = join(entryPath, 'chats');
       const chatsEntries = await safeReaddir(chatsDir);
+      if (!chatsEntries.length) continue;
+      const marker = await safeReadFile(join(entryPath, '.project_root'));
+      const workspace = projectPath(marker?.trim());
 
-      for (const chatEntry of chatsEntries) {
+      for (const chatEntry of chatsEntries.sort((a, b) => a.name.localeCompare(b.name))) {
         if (!chatEntry.isFile() || !isAcceptedFile(chatEntry, 'chats')) continue;
 
         const filePath = join(chatsDir, chatEntry.name);
-        accumulate(await cachedParse(CLIENT_KEY, CACHE_VERSION, filePath, parseGeminiFile));
+        await readEvents(filePath, workspace);
       }
     }
   }
 
+  for (const [eventKey, { sessionId, date, model, tokens, eventTime, workspace }] of parsed) {
+    const cost = calculateCost(model, tokens, pricingData, null, { eventTime, tiered: Boolean(eventTime) });
+    const ms = typeof eventTime === 'number' ? eventTime < 10_000_000_000 ? eventTime * 1000 : eventTime : Date.parse(eventTime);
+    if (ms >= cutoff) timeEvents.push({ client: CLIENT_KEY, eventKey, eventTime: new Date(ms).toISOString(),
+      sessionId, model, projectPath: workspace, tokens, cost });
+    const dk = `${date}::${model}`;
+    if (!dailyMap.has(dk)) dailyMap.set(dk, { date, model, ...zero(), cost: 0 });
+    addInto(dailyMap.get(dk), tokens);
+    dailyMap.get(dk).cost += cost;
+
+    const project = workspace ?? sessionId;
+    const wmk = `${project}::${model}`;
+    if (!wmMap.has(wmk)) wmMap.set(wmk, { workspace: project, model, ...zero(), cost: 0 });
+    addInto(wmMap.get(wmk), tokens);
+    wmMap.get(wmk).cost += cost;
+  }
+
   await flushCache(CLIENT_KEY);
-  return buildOutput(dailyMap, wmMap, pricingData);
+  return { ...buildOutput(dailyMap, wmMap), eventsJson: { events: timeEvents } };
 }
 
 // ---------------------------------------------------------------------------
 // Convert to common collector JSON
 // ---------------------------------------------------------------------------
 
-function buildOutput(dailyMap, wmMap, pricingData) {
+function buildOutput(dailyMap, wmMap) {
   const byDate = new Map();
   for (const row of dailyMap.values()) {
     if (!byDate.has(row.date)) byDate.set(row.date, []);
@@ -529,7 +483,7 @@ function buildOutput(dailyMap, wmMap, pricingData) {
     return {
       client:         CLIENT_KEY,
       workspaceKey:   wm.workspace,
-      workspaceLabel: wm.workspaceLabel,
+      workspaceLabel: wm.workspace,
       model:          wm.model,
       ...tokens,
       cost: wm.cost,

@@ -13,9 +13,15 @@ Linux 使用不同设备名称，例如：
 python3 install.py --device linux-dev
 首次安装输入 ingestToken，输入不回显；它与网页登录密码不同。
 
-重装已有客户端
-在维护源码目录执行：
+更新已有客户端
+确认 Hub 已完成部署后，在原来的源码仓库执行：
+git pull --ff-only origin main
+node --version
+python3 --version
 python3 install.py
+如果本机使用 asdf，请在能找到 Node.js 22.15 以上版本的终端运行。
+安装器会完成首次采集和上报，之后每 5 分钟自动运行。
+本次更新会补传逐笔调用和之前未同步的每日用量，仍沿用原设备名。
 也可显式指定完整公网地址：
 python3 install.py --push-url https://tks.420114.xyz/api/ingest
 安装器自动读取原设备名、采集令牌和时区；拒绝通过重装把已有设备改名。
@@ -48,6 +54,10 @@ run.py用文件锁防止并行重叠；单轮采集和推送限时15分钟，失
 crontab -l
 Mac检查公网连接：
 python3 "$HOME/Library/Application Support/ai-token-dashboard/run.py" --check
+Mac核对最近结果和上报数量：
+cat "$HOME/Library/Application Support/ai-token-dashboard/last-run.json"
+tail -n 30 "$HOME/Library/Application Support/ai-token-dashboard/logs/collector.out.log"
+最近结果应为 "status": "ok"、"exitCode": 0。安装时的首次上报输出显示在终端，后续定时结果写入日志。
 Mac手动执行：
 python3 "$HOME/Library/Application Support/ai-token-dashboard/run.py"
 Linux检查公网连接：

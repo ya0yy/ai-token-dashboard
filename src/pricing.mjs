@@ -16,7 +16,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { canonicalProvider, inferProviderFromModel, normalizeModelForGrouping } from './collectors/utils.mjs';
 import { zonedParts } from './timezone.mjs';
-import { deepSeekApiRates, deepSeekApiSchedule } from './deepseek-schedule.mjs';
+import { editableSchedule, isPeakTime } from './pricing-schedule.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -181,7 +181,9 @@ function customRates(model, policy, provider, eventTime) {
     _policyIndexes.set(policy, {
       defaults: new Map(policy.defaults.map(row => [normalizeModelForGrouping(row.model), row.rates])),
       rules: new Map(policy.rules.filter(row => row.enabled)
-        .map(row => [JSON.stringify([row.provider, pricingRuleModel(row.model)]), row]))
+        .map(row => [JSON.stringify([row.provider, pricingRuleModel(row.model)]), {
+          ...row, ...editableSchedule(row, policy.timeZone)
+        }]))
     });
   }
   const index = _policyIndexes.get(policy);
@@ -189,23 +191,12 @@ function customRates(model, policy, provider, eventTime) {
   // 渠道使用日志中的 ID，避免把 Vertex、Anthropic 等渠道合并。
   const rule = typeof provider === 'string' && index.rules.get(JSON.stringify([provider.trim(), pricingRuleModel(id)]));
   if (rule && eventTime != null) {
-    if (rule.schedule === deepSeekApiSchedule) {
-      return deepSeekApiRates(rule, eventTime) ?? index.defaults.get(id) ?? null;
-    }
-    const local = zonedParts(eventTime, policy.timeZone, true);
+    const local = zonedParts(eventTime, rule.timeZone, true);
     if (local && (!rule.effectiveFrom || local.date >= rule.effectiveFrom)) {
-      const minute = local.hour * 60 + local.minute;
-      const start = clockMinute(rule.offPeakStart), end = clockMinute(rule.offPeakEnd);
-      const offPeak = start < end ? minute >= start && minute < end : minute >= start || minute < end;
-      return offPeak ? rule.offPeak : rule.peak;
+      return isPeakTime(rule, local) ? rule.peak : rule.offPeak;
     }
   }
   return index.defaults.get(id) ?? null;
-}
-
-function clockMinute(time) {
-  const [hour, minute] = time.split(':').map(Number);
-  return hour * 60 + minute;
 }
 
 function resolveRates(model, pricingData, provider, eventTime) {

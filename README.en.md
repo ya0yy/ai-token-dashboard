@@ -277,7 +277,7 @@ The repository includes two bundled pricing caches:
 - `data/pricing-litellm.json`
 - `data/pricing-openrouter.json`
 
-The pricing page (`/pricing`) shows bundled model defaults in USD per million tokens. Add a custom default or enable a provider/model rule. The daily off-peak window follows the configured time zone, includes its start, and excludes its end. It can cross midnight. Missing providers and unmatched rules use the model default.
+The pricing page (`/pricing`) shows bundled model defaults in USD per million tokens. Enable a rule for the exact provider ID from the collector and the model. Each rule has its own time zone, peak periods by weekday, and optional dates that use the off-peak rate all day. A peak period includes its start and excludes its end. If it crosses midnight, the selected weekday is the day it starts. You can apply the DeepSeek schedule and edit it. Missing providers and unmatched rules use the model default.
 
 The hub saves rules in `data/pricing-rules.json`. New collectors with `--push` send usage and confirmed provider charges. The hub prices each call at ingest and preserves the stored amount on replay. Upgrade the hub first. It continues to accept the previous upload protocol. Standalone collectors still price locally, and collectors writing directly to a shared database can use `PRICING_SNAPSHOT_URL`.
 
@@ -332,7 +332,7 @@ Apply saves a scoped backup in `data/backups/`, then replaces daily, event and l
 - Collectors read **local files**. Local SQLite collection is offline unless a remote price snapshot or push destination is configured. A remote `DATABASE_URL` connects to and writes that database.
 - `npm run pricing:update` intentionally contacts upstream pricing sources to refresh local caches.
 - Nothing is uploaded unless you explicitly pass `--push`.
-- `--push` sends call details to the hub you specify, where they are priced at ingest.
+- `--push` sends call details, confirmed provider charges, and daily token totals to the hub. The hub prices calls at ingest and keeps summary-only usage at daily precision.
 - The server binds to loopback by default. External binding requires authentication for the dashboard, read APIs and uploads.
 - `POST /api/collect` only accepts loopback requests, so remote pages cannot trigger local log scans.
 - Do not commit `data/usage.sqlite`, `.env`, or any exported data files.

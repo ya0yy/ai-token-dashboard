@@ -8,7 +8,7 @@ import { gzipSync } from 'node:zlib';
 
 const root = mkdtempSync(join(tmpdir(), 'collector-accuracy-'));
 after(() => rmSync(root, { recursive: true, force: true }));
-const paths = Object.fromEntries(['claude', 'codex', 'opencode', 'openclaw', 'hermes'].map(name => [name, join(root, name)]));
+const paths = Object.fromEntries(['claude', 'codex', 'opencode', 'openclaw', 'hermes', 'gemini'].map(name => [name, join(root, name)]));
 for (const path of Object.values(paths)) mkdirSync(path, { recursive: true });
 process.env.AI_TOKEN_DASHBOARD_CONFIG = join(root, 'config.json');
 process.env.AI_TOKEN_DASHBOARD_CACHE_DIR = join(root, 'cache');
@@ -18,13 +18,14 @@ process.env.HERMES_HOME = paths.hermes;
 delete process.env.OPENCODE_DB;
 writeFileSync(process.env.AI_TOKEN_DASHBOARD_CONFIG, JSON.stringify({ collectors: {
   codex: { sessionSubdirs: ['sessions'], headlessRoots: [] },
-  opencode: { dataDir: paths.opencode }, openclaw: { agentRoots: [paths.openclaw] }
+  opencode: { dataDir: paths.opencode }, openclaw: { agentRoots: [paths.openclaw] }, gemini: { tmpDir: paths.gemini }
 } }));
 const claude = await import('../src/collectors/claude-code.mjs');
 const codex = await import('../src/collectors/codex.mjs');
 const opencode = await import('../src/collectors/opencode.mjs');
 const openclaw = await import('../src/collectors/openclaw.mjs');
 const hermes = await import('../src/collectors/hermes.mjs');
+const gemini = await import('../src/collectors/gemini.mjs');
 const now = Date.now() - 60_000;
 const timestamp = new Date(now).toISOString();
 const pricing = { 'audit-model': { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 } };
@@ -32,6 +33,32 @@ const write = (path, content) => { mkdirSync(dirname(path), { recursive: true })
 const jsonl = rows => rows.map(row => JSON.stringify(row)).join('\n') + '\n';
 const totals = result => result.graphJson.contributions.flatMap(day => day.clients)
   .reduce((n, row) => n + Object.values(row.tokens).reduce((a, b) => a + b, 0), 0);
+
+test('Gemini 采集稳定的逐笔用量，保留只有汇总的用量精度', async () => {
+  const turn = { type: 'gemini', id: 'turn', timestamp, model: 'audit-model',
+    tokens: { input: 100, output: 10, cached: 20, thoughts: 2, total: 112 } };
+  const projectLog = join(paths.gemini, 'project', 'chats', 'session-a.json');
+  write(join(paths.gemini, 'project', '.project_root'), '/project/gemini\n');
+  write(projectLog, JSON.stringify({ sessionId: 'a', messages: [turn] }));
+  write(join(paths.gemini, 'session-copy.jsonl'), jsonl([{ type: 'init', session_id: 'a' }, turn]));
+  write(join(paths.gemini, 'session-b.json'), JSON.stringify({ session_id: 'b', timestamp, model: 'audit-model',
+    stats: { input_tokens: 50, output_tokens: 5 } }));
+
+  const result = await gemini.collect(pricing);
+  assert.equal(totals(result), 167);
+  assert.equal(result.eventsJson.events.length, 1);
+  const [record] = result.eventsJson.events;
+  assert.equal(record.eventTime, timestamp);
+  assert.equal(record.sessionId, 'a');
+  assert.equal(record.projectPath, '/project/gemini');
+  assert.deepEqual(record.tokens, { input: 80, output: 10, cacheRead: 20, cacheWrite: 0, reasoning: 2 });
+  const corrected = { ...turn, tokens: { ...turn.tokens, output: 12, total: 114 } };
+  write(projectLog, JSON.stringify({ sessionId: 'a', messages: [corrected] }));
+  write(join(paths.gemini, 'session-copy.jsonl'), jsonl([{ type: 'init', session_id: 'a' }, turn, corrected]));
+  const updated = await gemini.collect(pricing);
+  assert.equal(totals(updated), 169);
+  assert.equal(updated.eventsJson.events[0].eventKey, record.eventKey);
+});
 
 test('Codex bills inclusive output once and daily cost equals request costs', async () => {
   const usage = { input_tokens: 0, output_tokens: 100, reasoning_output_tokens: 40 };

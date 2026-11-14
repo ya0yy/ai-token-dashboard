@@ -253,11 +253,13 @@ async function initSchema(db) {
     }
   }
 
-  for (const table of ['daily_usage', 'time_usage']) {
-    const columns = [['cost_basis', "VARCHAR(64) NOT NULL DEFAULT 'legacy_unknown'"], ['pricing_version', 'VARCHAR(64)'],
-      ['hub_repriced', 'INTEGER NOT NULL DEFAULT 0']];
-    if (table === 'time_usage') columns.push(['provider', 'VARCHAR(255)'], ['pricing_time', 'VARCHAR(40)'],
-      ['billed_cost_usd', 'DOUBLE PRECISION']);
+  const costColumns = [['cost_basis', "VARCHAR(64) NOT NULL DEFAULT 'legacy_unknown'"], ['pricing_version', 'VARCHAR(64)'],
+    ['hub_repriced', 'INTEGER NOT NULL DEFAULT 0']];
+  for (const [table, columns] of [
+    ['daily_usage', costColumns],
+    ['time_usage', [...costColumns, ['provider', 'VARCHAR(255)'], ['pricing_time', 'VARCHAR(40)'], ['billed_cost_usd', 'DOUBLE PRECISION']]],
+    ['sync_targets', [['usage_protocol', 'INTEGER NOT NULL DEFAULT 0']]]
+  ]) {
     for (const [column, definition] of columns) {
       if (db.driver === 'sqlite') await ensureSqliteColumn(db, table, column, definition);
       else if (db.driver === 'postgres') await db.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
