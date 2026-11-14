@@ -41,8 +41,9 @@ export function RepricePanel({ rules }) {
           fallbackProvider: recoverLegacyPiZero ? fallbackProvider || undefined : undefined, previewId }),
         signal: AbortSignal.timeout(60_000)
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `请求失败（HTTP ${response.status}）`);
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || `重算请求失败（HTTP ${response.status}），请重新预览。`);
+      if (!data) throw new Error('服务端返回了无法读取的重算结果，请重新预览。');
       setResult(data);
     } catch (err) {
       setError(err.message || '请求失败，请重新预览');

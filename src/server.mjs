@@ -514,6 +514,7 @@ async function handleReprice(req, res) {
     return;
   }
   try {
+    const startedAt = performance.now();
     const pricing = await currentPricingSnapshot();
     if (options.fallbackProvider && !pricing.policy.rules.some(rule => rule.enabled && rule.provider === options.fallbackProvider
       && pricingRuleModel(rule.model) === pricingRuleModel(options.model))) {
@@ -521,7 +522,7 @@ async function handleReprice(req, res) {
       return;
     }
     const { scopes, backupPath, ...result } = await repriceUsage(db, pricing, options);
-    console.log(`[费用重算] ${options.apply ? '执行' : '预览'}，开始: ${options.start}，结束: ${options.end}，模型: ${options.model || '全部'}，补算旧 Pi 零金额: ${options.recoverLegacyPiZero}，参考 Provider: ${options.fallbackProvider || '默认'}，范围: ${scopes.length}，调用: ${result.counts.time}，差额 USD: ${result.difference}，价格版本: ${pricing.version}`);
+    console.log(`[费用重算] ${options.apply ? '执行' : '预览'}，开始: ${options.start}，结束: ${options.end}，模型: ${options.model || '全部'}，补算旧 Pi 零金额: ${options.recoverLegacyPiZero}，参考 Provider: ${options.fallbackProvider || '默认'}，范围: ${scopes.length}，调用: ${result.counts.time}，差额 USD: ${result.difference}，价格版本: ${pricing.version}，耗时毫秒: ${Math.round(performance.now() - startedAt)}`);
     if (backupPath) console.log(`[费用重算] 服务端备份: ${backupPath}`);
     sendJson(res, { ...result, backupFile: backupPath ? basename(backupPath) : null });
   } catch (error) {

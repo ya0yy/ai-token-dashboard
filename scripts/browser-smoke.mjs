@@ -187,6 +187,12 @@ try {
   await preview.getByLabel('开始日期').fill(official.usageDate);
   await preview.getByLabel('结束日期').fill(official.usageDate);
   await preview.getByLabel('模型 ID').fill(official.model);
+  const repriceRoute = '**/api/pricing/reprice';
+  const failPreview = route => route.fulfill({ status: 502, contentType: 'text/html', body: '<html>Bad Gateway</html>' });
+  await pricing.route(repriceRoute, failPreview);
+  await preview.getByRole('button', { name: '预览差额' }).click();
+  await preview.getByRole('alert').filter({ hasText: '重算请求失败（HTTP 502）' }).waitFor();
+  await pricing.unroute(repriceRoute, failPreview);
   await preview.getByLabel('仅补算旧版 Pi Agent 的零金额').check();
   await preview.getByLabel('缺少 Provider 时使用的参考价').selectOption('official-reference');
   await preview.getByRole('button', { name: '预览差额' }).click();

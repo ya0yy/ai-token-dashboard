@@ -1,5 +1,6 @@
 import { tokenFields } from './db-batch.mjs';
 import { calculateCost, hasModelPricing } from './pricing.mjs';
+import { rowKey } from './usage-store.mjs';
 
 const dayKey = row => JSON.stringify([row.device, row.source, row.usageDate, row.model]);
 const projectKey = row => JSON.stringify([row.device, row.source, row.projectPath]);
@@ -71,29 +72,51 @@ function repriceEvent(row, pricingData, recoverLegacyPiZero, fallbackProvider) {
   return { ...row, ...price };
 }
 
-function updateLegacySessions(sessions, events, changed, skipped) {
-  const projects = group(events, projectKey);
+export function updateLegacySessions(sessions, projectModels, changedProjects, skipped) {
   const candidates = [];
   for (const row of sessions) {
     // 兼容表的 sessionId 实际按工作区和模型聚合，不能用调用的 sessionId 关联。
     if (!row.projectPath || !row.sessionId.startsWith('local:')) continue;
-    const project = projects.get(projectKey(row)) || [];
-    const models = [...new Set(project.map(event => event.model).filter(model => row.sessionId.endsWith(`:${model}`)))];
-    const detail = models.length === 1 ? project.filter(event => event.model === models[0]) : [];
-    if (detail.some(event => changed.has(event))) candidates.push({ row, detail });
+    const project = projectKey(row);
+    const models = projectModels.get(project)?.filter(item => row.sessionId.endsWith(`:${item.model}`)) ?? [];
+    if (models.length !== 1) continue;
+    const [detail] = models;
+    const delta = changedProjects.get(project)?.get(detail.model);
+    if (delta !== undefined) candidates.push({ row, detail, delta });
   }
 
   const owners = new Map();
-  for (const { detail } of candidates) for (const event of detail) owners.set(event, (owners.get(event) || 0) + 1);
-  return candidates.flatMap(({ row, detail }) => {
-    if (detail.some(event => owners.get(event) > 1) || !fullTokens(row, detail)
-      || !sameAmount(Number(row.costUSD), sum(detail, 'costUSD'))) {
+  for (const { detail } of candidates) owners.set(detail, (owners.get(detail) || 0) + 1);
+  return candidates.flatMap(({ row, detail, delta }) => {
+    if (owners.get(detail) > 1 || !fullTokens(row, [detail]) || !sameAmount(Number(row.costUSD), detail.costUSD)) {
       skipped.incompleteSession++;
       return [];
     }
-    const costUSD = sum(detail.map(event => changed.get(event) || event), 'costUSD');
+    const costUSD = detail.costUSD + delta;
     return costUSD === Number(row.costUSD) ? [] : [{ ...row, costUSD }];
   });
+}
+
+export function addProjectCostChanges(projects, changes, original) {
+  for (const row of changes) {
+    if (!row.projectPath) continue;
+    const key = projectKey(row);
+    if (!projects.has(key)) projects.set(key, new Map());
+    const models = projects.get(key);
+    const delta = row.costUSD - original.get(rowKey('time', row)).costUSD;
+    models.set(row.model, (models.get(row.model) ?? 0) + delta);
+  }
+}
+
+function planLegacySessions(previous, changes, skipped) {
+  if (!previous.sessions.length || !changes.length) return [];
+  const byProject = group(previous.time, projectKey);
+  const summaries = new Map([...byProject].map(([key, rows]) => [key, [...group(rows, row => row.model)]
+    .map(([model, events]) => ({ model, costUSD: sum(events, 'costUSD'),
+      ...Object.fromEntries(tokenFields.map(field => [field, sum(events, field)])) }))]));
+  const projects = new Map();
+  addProjectCostChanges(projects, changes, new Map(previous.time.map(row => [rowKey('time', row), row])));
+  return updateLegacySessions(previous.sessions, summaries, projects, skipped);
 }
 
 /** 以完整日汇总为单位重算，让调用明细与看板总额一起提交。 */
@@ -127,6 +150,7 @@ export function planReprice(previous, pricingData, { start, end, model, recoverL
     costAfter += costs.costUSD;
   }
 
-  const sessions = changed.size ? updateLegacySessions(previous.sessions, previous.time, changed, skipped) : [];
-  return { next: { daily, time: [...changed.values()], sessions }, skipped, costBefore, costAfter };
+  const time = [...changed.values()];
+  const sessions = planLegacySessions(previous, time, skipped);
+  return { next: { daily, time, sessions }, skipped, costBefore, costAfter };
 }

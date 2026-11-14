@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { openDb } from '../src/db.mjs';
@@ -62,4 +62,38 @@ test('Hub 预览后重算完整明细，接收旧上报和迟到调用时保留�
   assert.equal(stored.time.find(row => row.eventKey === item.eventKey).costUSD, 0.01);
   assert.equal(stored.daily.find(row => row.usageDate === day.usageDate).costUSD, 0.51);
   assert.equal(stored.daily.find(row => row.usageDate === dailyOnly.usageDate).costUSD, 3);
+});
+
+test('重算预览按日期读取明细，长历史和低内存下仍可预览及备份', { timeout: 30_000 }, async t => {
+  const hub = await startServer({ NODE_OPTIONS: '--max-old-space-size=64' });
+  const db = await openDb(join(hub.root, 'usage.sqlite'));
+  t.after(async () => { await db.close(); await hub.close(); });
+  const day = usage({ model: 'gpt-5.3', costBasis: 'estimated', pricingVersion: 'old' });
+  const item = event(day);
+  const earlier = { ...item, eventKey: 'earlier', usageDate: '2026-08-01', eventTime: '2026-08-01T00:00:00Z' };
+  const session = { ...day, projectPath: item.projectPath, sessionId: `local:project:${day.model}`,
+    inputTokens: 200, outputTokens: 20, totalTokens: 220, costUSD: 2 };
+  assert.equal((await hub.ingest({ daily: [day], time: [item, earlier], sessions: [session] })).status, 200);
+  await db.run(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 100000)
+    INSERT INTO time_usage (device, source, event_key, event_time, usage_date, model, project_path, updated_at)
+    SELECT ?, ?, 'history-' || n, '2026-08-01T00:00:00Z', '2026-08-01', 'other-model',
+      '/project/' || hex(randomblob(160)), CURRENT_TIMESTAMP FROM seq`, [day.device, day.source]);
+  const range = { start: day.usageDate, end: day.usageDate };
+  const request = body => fetch(hub.base + '/api/pricing/reprice', { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
+  const response = await request(range);
+  assert.equal(response.status, 200);
+  const preview = await response.json();
+  assert.equal(preview.counts.time, 1);
+  assert.equal(preview.counts.sessions, 1);
+  assert.equal((await db.get("SELECT cost_usd FROM time_usage WHERE event_key = 'a'")).cost_usd, 1);
+  const applied = await request({ ...range, previewId: preview.previewId });
+  assert.equal(applied.status, 200);
+  const result = await applied.json();
+  assert.equal(result.counts.time, 1);
+  const backup = JSON.parse(await readFile(join(hub.root, 'data', 'backups', result.backupFile), 'utf8'));
+  assert.equal(backup.time.length, 100002);
+  assert.equal(backup.time.find(row => row.eventKey === 'a').costUSD, 1);
+  assert.equal((await db.get("SELECT COUNT(*) AS n FROM time_usage WHERE usage_date = '2026-08-01'")).n, 100001);
+  assert.equal((await db.get('SELECT cost_usd FROM session_usage')).cost_usd, 1 + preview.costAfter);
 });
