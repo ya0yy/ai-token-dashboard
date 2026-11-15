@@ -140,6 +140,14 @@ function DataTable({ rows, columns, initialSort, search, onSearch, onRowClick, s
 // ───────────────────────────────────────────────────────────────
 // Combined tabbed table panel
 // ───────────────────────────────────────────────────────────────
+// 表格显示百万 Token，排序和 CSV 导出仍使用原始数值。
+const totalTokensColumn = {
+  field: 'totalTokens', title: 'Total', hozAlign: 'right', width: 130,
+  render: r => (
+    <span className="num-strong" title={U.fmt.format(r.totalTokens)}>{U.compact(r.totalTokens)}</span>
+  )
+};
+
 function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pricing }) {
   const [tab, setTab] = useState('sources');
   const [search, setSearch] = useState('');
@@ -194,9 +202,7 @@ function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pric
     )},
     { field: 'device', title: '设备', render: r => <span className="muted" style={{fontSize:11.5}}>{r.device}</span> },
     { field: 'modelCount', title: '模型', hozAlign: 'right', render: r => r.modelCount, width: 70 },
-    { field: 'totalTokens', title: 'Total', hozAlign: 'right', render: r => (
-      <span className="num-strong">{U.fmt.format(r.totalTokens)}</span>
-    ), width: 130 },
+    totalTokensColumn,
     { field: 'share', title: '占比', hozAlign: 'left',
       value: r => r.totalTokens / (totalTokens || 1),
       render: r => {
@@ -228,9 +234,7 @@ function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pric
     { field: 'inputTokens', title: 'Input', hozAlign: 'right', render: r => U.compact(r.inputTokens), width: 90 },
     { field: 'outputTokens', title: 'Output', hozAlign: 'right', render: r => U.compact(r.outputTokens), width: 90 },
     { field: 'cacheReadTokens', title: 'Cache Read', hozAlign: 'right', render: r => U.compact(r.cacheReadTokens), width: 110 },
-    { field: 'totalTokens', title: 'Total', hozAlign: 'right', render: r => (
-      <span className="num-strong">{U.fmt.format(r.totalTokens)}</span>
-    ), width: 130 },
+    totalTokensColumn,
     { field: 'costUSD', title: '费用', hozAlign: 'right', render: r => (
       r.costUSD > 0 ? <span style={{color:'var(--c-amber)'}}>{U.fmtUS4.format(r.costUSD)}</span> : <span className="muted">—</span>
     ), width: 100 }
@@ -252,9 +256,7 @@ function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pric
     ), width: 130 },
     { field: 'inputTokens', title: 'Input', hozAlign: 'right', render: r => U.compact(r.inputTokens), width: 90 },
     { field: 'outputTokens', title: 'Output', hozAlign: 'right', render: r => U.compact(r.outputTokens), width: 90 },
-    { field: 'totalTokens', title: 'Total', hozAlign: 'right', render: r => (
-      <span className="num-strong">{U.fmt.format(r.totalTokens)}</span>
-    ), width: 130 },
+    totalTokensColumn,
     { field: 'costUSD', title: '费用', hozAlign: 'right', render: r => (
       r.costUSD > 0 ? <span style={{color:'var(--c-amber)'}}>{U.fmtUS4.format(r.costUSD)}</span> : <span className="muted">—</span>
     ), width: 100 }
