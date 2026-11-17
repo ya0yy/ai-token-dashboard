@@ -7,6 +7,7 @@ import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from 'motion/r
 import { AnimatedNumber } from './AnimatedNumber.jsx';
 import { UsageNotes, InfoButton } from './UsageNotes.jsx';
 import { U } from '../shared/utils.js';
+import { providerLabel } from '../shared/usage-data.js';
 import { displayTimeZone } from '../shared/display-time.js';
 import { ThemeToggle } from '../shared/ThemeToggle.jsx';
 import { quotaWindowLabel, orderQuotaWindows } from '../shared/quota.js';
@@ -202,7 +203,7 @@ function Topbar({ lastSync, onRefresh, refreshing, onCollect, collecting, collec
 // ───────────────────────────────────────────────────────────────
 // Filter bar
 // ───────────────────────────────────────────────────────────────
-function FilterBar({ f, setF, allSources, sourceOptions, allDevices, allModels, availableRange, onExport, onExportTrend, exportDisabled = false, quota }) {
+function FilterBar({ f, setF, allSources, sourceOptions, allDevices, allModels, allProviders, availableRange, onExport, onExportTrend, exportDisabled = false, quota }) {
   const reduceMotion = useReducedMotion();
   const exportRef = useRef(null);
   useEffect(() => {
@@ -275,10 +276,10 @@ function FilterBar({ f, setF, allSources, sourceOptions, allDevices, allModels, 
   };
 
   const clearAll = () => {
-    setF({ ...f, sources: new Set(), devices: new Set(), models: new Set() });
+    setF({ ...f, sources: new Set(), devices: new Set(), models: new Set(), providers: new Set() });
   };
 
-  const filtersActive = f.sources.size + f.devices.size + f.models.size;
+  const filtersActive = f.sources.size + f.devices.size + f.models.size + f.providers.size;
 
   return (
     <div className="filterbar">
@@ -350,6 +351,13 @@ function FilterBar({ f, setF, allSources, sourceOptions, allDevices, allModels, 
             selected={f.models}
             onChange={v => setF({...f, models: v})}
             placeholder="全部模型"/>
+          <span className="filter-label">Provider</span>
+          <MultiSelect
+            options={allProviders}
+            selected={f.providers}
+            onChange={v => setF({...f, providers: v})}
+            formatOption={providerLabel}
+            placeholder="全部 Provider"/>
         </div>
 
         <div className="filter-spacer"/>
@@ -497,7 +505,7 @@ function monthCells(monthDate) {
 // ───────────────────────────────────────────────────────────────
 // MultiSelect — dropdown with checkboxes
 // ───────────────────────────────────────────────────────────────
-function MultiSelect({ options, selected, onChange, placeholder }) {
+function MultiSelect({ options, selected, onChange, placeholder, formatOption = value => value }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -510,7 +518,7 @@ function MultiSelect({ options, selected, onChange, placeholder }) {
   const label = selected.size === 0
     ? placeholder
     : selected.size === 1
-      ? Array.from(selected)[0]
+      ? formatOption(selected.values().next().value)
       : `${selected.size} 项已选`;
 
   const toggle = (v) => {
@@ -520,8 +528,9 @@ function MultiSelect({ options, selected, onChange, placeholder }) {
   };
 
   return (
-    <div ref={ref} style={{position:'relative', display:'inline-block'}}>
+    <div ref={ref} className="filter-select">
       <button className={`pill ${selected.size ? 'active' : ''}`} onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
         style={{paddingLeft: 10, fontWeight: selected.size ? 600 : 400}}>
         {label}
         <svg width="9" height="9" viewBox="0 0 9 9" fill="none" style={{marginLeft:2, opacity:0.5}}>
@@ -529,9 +538,8 @@ function MultiSelect({ options, selected, onChange, placeholder }) {
         </svg>
       </button>
       {open && (
-        <div style={{
-          position:'absolute', top:'calc(100% + 6px)', left:0, zIndex:30,
-          minWidth: 220, background: 'var(--surface)',
+        <div className="filter-select-menu" style={{
+          zIndex:30, background: 'var(--surface)',
           border: '1px solid var(--border)', borderRadius: 8,
           boxShadow: '0 10px 30px -10px rgb(0 0 0 / 0.15)',
           padding: 4, maxHeight: 280, overflowY: 'auto'
@@ -541,7 +549,7 @@ function MultiSelect({ options, selected, onChange, placeholder }) {
               onClick={() => onChange(new Set())}>清除选择</button>
           )}
           {options.map(o => (
-            <button key={o} className="chip"
+            <button key={o} className="chip" aria-pressed={selected.has(o)}
               onClick={() => toggle(o)}
               style={{width:'100%', justifyContent:'flex-start', gap:8, fontWeight:400}}>
               <span style={{
@@ -556,9 +564,10 @@ function MultiSelect({ options, selected, onChange, placeholder }) {
                   </svg>
                 )}
               </span>
-              <span style={{overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontSize: 12}}>{o}</span>
+              <span style={{overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontSize: 12}}>{formatOption(o)}</span>
             </button>
           ))}
+          {!options.length && <p className="muted" style={{margin: '6px 8px'}}>当前范围无可用选项</p>}
         </div>
       )}
     </div>

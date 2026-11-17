@@ -7,6 +7,7 @@ import { motion, useReducedMotion } from 'motion/react';
 import { U } from '../shared/utils.js';
 import { sourceIcon, sourceIconScale } from './source-icons.js';
 import { paginateRows } from '../shared/pagination.js';
+import { providerLabel } from '../shared/usage-data.js';
 import { EventDetails } from './EventDetails.jsx';
 
 // Source cell: brand icon when available, otherwise the colored dot.
@@ -148,7 +149,7 @@ const totalTokensColumn = {
   )
 };
 
-function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pricing }) {
+function TablePanel({ daily, sessions, providers, runs, sources, totalTokens, onDrill, pricing }) {
   const [tab, setTab] = useState('sources');
   const [search, setSearch] = useState('');
   const [showHistory, setShowHistory] = useState(false);
@@ -191,6 +192,7 @@ function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pric
   const TABS = [
     { id: 'sources', label: '来源 / 设备', count: bySource.length },
     { id: 'models',  label: '模型',        count: byModel.length },
+    { id: 'providers', label: 'Provider', count: providers.length },
     { id: 'sessions', label: '项目', count: sessions.length },
     { id: 'runs',    label: '采集记录',    count: runs.length }
   ];
@@ -262,6 +264,13 @@ function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pric
     ), width: 100 }
   ];
 
+  const providerColumns = [
+    { field: 'provider', title: 'Provider', value: r => providerLabel(r.provider) },
+    totalTokensColumn,
+    ...modelColumns.filter(column => ['inputTokens', 'outputTokens', 'cacheReadTokens', 'costUSD'].includes(column.field)),
+    { field: 'cacheCreationTokens', title: 'Cache Creation', hozAlign: 'right', render: r => U.compact(r.cacheCreationTokens), width: 120 }
+  ];
+
   const runColumns = [
     { field: 'collectedAt', title: '时间', render: r => (
       <span className="mono" style={{fontSize: 11.5, color: 'var(--text-2)', whiteSpace: 'nowrap'}}>{formatRunTime(r)}</span>
@@ -288,6 +297,7 @@ function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pric
   let columns, rows, initialSort, emptyText;
   if (tab === 'sources')  { columns = sourceColumns;  rows = bySource;  initialSort = { field: 'totalTokens', dir: 'desc' }; emptyText = '当前筛选下无来源'; }
   if (tab === 'models')   { columns = modelColumns;   rows = byModel;   initialSort = { field: 'totalTokens', dir: 'desc' }; emptyText = '当前筛选下无模型'; }
+  if (tab === 'providers') { columns = providerColumns; rows = providers; initialSort = { field: 'totalTokens', dir: 'desc' }; emptyText = '当前范围没有调用明细'; }
   if (tab === 'sessions') { columns = sessionColumns; rows = sessions;  initialSort = { field: 'totalTokens', dir: 'desc' }; emptyText = '当前范围没有可归属项目的事件明细'; }
   if (tab === 'runs')     { columns = runColumns;     rows = showHistory ? runs : latest; initialSort = { field: 'collectedAt', dir: 'desc' }; emptyText = '暂无采集记录'; }
 
@@ -297,7 +307,7 @@ function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pric
 
   return (
     <div className={`panel table-panel ${tab === 'runs' ? 'table-panel-runs' : ''}`}>
-      <div className="table-heading"><div><h2 className="panel-title">用量明细</h2><p className="panel-sub">按来源、模型或项目核对记录</p></div><span>点击行查看详情</span></div>
+      <div className="table-heading"><div><h2 className="panel-title">用量明细</h2><p className="panel-sub">按来源、模型、Provider 或项目核对记录</p></div><span>点击行查看详情</span></div>
       <div className="panel-header" style={{marginBottom: 14}}>
         <div className="panel-tabs">
           {TABS.map(t => (
@@ -316,6 +326,7 @@ function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pric
           </button>
         </div>
       </div>
+      {tab === 'providers' && <p className="muted">Provider 汇总来自调用明细，未记录渠道的调用单独列出。</p>}
       {tab === 'runs' && <div className="collection-explainer">
         <label><input type="checkbox" checked={showHistory} onChange={e => setShowHistory(e.target.checked)} /> 展开历史记录（{runs.length} 条）</label>
         <p>默认按工具和设备显示最近一次结果（{latest.length} 项）；只受来源和设备筛选影响。历史记录最多保留接口返回的最近 500 条。</p>
@@ -329,7 +340,7 @@ function TablePanel({ daily, sessions, runs, sources, totalTokens, onDrill, pric
         search={search}
         height={420}
         emptyText={emptyText}
-        getKey={r => r.sessionId || `${r.source}-${r.model || ''}-${r.device || ''}-${r.collectedAt || ''}`}
+        getKey={r => tab === 'providers' ? r.provider : r.sessionId || `${r.source}-${r.model || ''}-${r.device || ''}-${r.collectedAt || ''}`}
         onRowClick={r => onDrill?.({ kind: tab.slice(0,-1), row: r })}
       />
     </div>
@@ -372,6 +383,7 @@ function DrillDrawer({ drill, daily, rangeLabel, eventQuery, revision, onClose }
     let title = '', sub = '', filterFn = () => true;
     if (kind === 'source') { title = row.source; sub = row.device; filterFn = r => r.source === row.source && r.device === row.device; }
     if (kind === 'model')  { title = row.model; sub = drill.allSources ? '当前筛选内的所有来源' : row.source; filterFn = r => (drill.allSources || r.source === row.source) && r.model === row.model; }
+    if (kind === 'provider') { title = providerLabel(row.provider); filterFn = r => (r.provider ?? '') === row.provider; }
     if (kind === 'session'){ title = row.projectPath || row.sessionId; sub = `${row.source} · ${row.device}`;
       filterFn = r => r.source === row.source && r.device === row.device && r.projectPath === row.projectPath && r.model === row.model; }
     if (kind === 'run')    { title = `采集: ${row.source}`; sub = U.formatTs(row.collectedAt); filterFn = () => false; }
@@ -410,6 +422,7 @@ function DrillDrawer({ drill, daily, rangeLabel, eventQuery, revision, onClose }
               <div style={{fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4}}>
                 {detail.kind === 'source' && '来源详情'}
                 {detail.kind === 'model' && '模型详情'}
+                {detail.kind === 'provider' && 'Provider 详情'}
                 {detail.kind === 'session' && '项目详情'}
                 {detail.kind === 'run' && '采集详情'}
               </div>

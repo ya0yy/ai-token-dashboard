@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence } from 'motion/react';
 import { U } from '../shared/utils.js';
-import { dailyRangeForFilters, hourlyRangeForFilters, fetchDailyRange, fetchHourlyRange, usageExportUrl, fetchTimeSummary, projectTotals, summaryRangeForFilters, eventQueryForFilters, filterDimensions, summarySourceOptions } from '../shared/usage-data.js';
+import { dailyRangeForFilters, hourlyRangeForFilters, fetchDailyRange, fetchHourlyRange, usageExportUrl, fetchTimeSummary, projectTotals, providerTotals, summaryRangeForFilters, eventQueryForFilters, filterDimensions, summarySourceOptions } from '../shared/usage-data.js';
 import { useRangeQuery } from '../shared/use-range-query.js';
 import { displayTimeMs } from '../shared/display-time.js';
 import { Topbar, FilterBar, KPI } from './components-top.jsx';
@@ -33,6 +33,7 @@ export function App() {
     sources: new Set(),
     devices: new Set(),
     models: new Set(),
+    providers: new Set(),
     compare: true
   }));
   const [timeState, setTimeState] = useState({ summary: null, key: null, loading: false, error: null });
@@ -247,13 +248,22 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
     if (preciseRange) onNeedTime?.(preciseRange, { force: true });
   }, [preciseKey, M.timeRevision, onNeedTime]);
 
-  // Build option lists
-  const filterBaseRows = M.daily;
-  const sourceOptions = useMemo(() => filters.precise ? summarySourceOptions(preciseReady ? M.time : EMPTY_TIME, filters)
-    : U.sourceOptions(filterBaseRows, filters), [filterBaseRows, filters, M.time, preciseReady]);
+  const byProvider = filters.providers.size > 0;
+  const effective = useMemo(() => focusedSource ? { ...filters, sources: new Set([focusedSource]) } : filters, [filters, focusedSource]);
+  const filterUsage = filters.precise ? filterDimensions : U.filterDaily;
+  const projectRows = filters.precise ? (preciseReady ? M.timeSummary.current.projectDaily : EMPTY_TIME) : M.projectDaily;
+  // 老日汇总可能没有对应的调用明细。只在选择 Provider 时切换统计口径。
+  const usageRows = byProvider ? projectRows : filters.precise ? (preciseReady ? M.time : EMPTY_TIME) : M.daily;
+  const sourceOptions = useMemo(() => filters.precise ? summarySourceOptions(usageRows, filters)
+    : U.sourceOptions(usageRows, filters), [usageRows, filters]);
   const allSources = useMemo(() => sourceOptions.map(o => o.source), [sourceOptions]);
   const allDevices = M.dimensions.devices;
   const allModels = M.dimensions.models;
+  const allProviders = useMemo(() => {
+    const rows = filterUsage(projectRows, { ...effective, providers: new Set() });
+    return [...new Set([...rows.map(row => row.provider ?? ''), ...filters.providers])]
+      .sort((a, b) => Number(!a) - Number(!b) || a.localeCompare(b));
+  }, [projectRows, effective, filterUsage, filters.providers]);
   const availableRange = useMemo(() => {
     const dates = [M.dateRange.start, M.dateRange.end].filter(Boolean);
     const times = [M.eventRange?.start, M.eventRange?.end].filter(Boolean).sort();
@@ -266,21 +276,10 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
   }, [M.dateRange, M.eventRange]);
 
   // ───── Filtered data ─────
-  const sourceContextRows = useMemo(() => filters.precise
-    ? filterDimensions(preciseReady ? M.time : EMPTY_TIME, filters) : U.filterDaily(M.daily, filters), [filters, M.time, M.daily, preciseReady]);
-  const filtered = useMemo(() => {
-    const effective = { ...filters };
-    if (focusedSource) effective.sources = new Set([focusedSource]);
-    return filters.precise
-      ? filterDimensions(preciseReady ? M.time : EMPTY_TIME, effective)
-      : U.filterDaily(M.daily, effective);
-  }, [filters, focusedSource, M.daily, M.time, preciseReady]);
-
-  const filteredHourly = useMemo(() => {
-    const effective = { ...filters };
-    if (focusedSource) effective.sources = new Set([focusedSource]);
-    return filters.precise ? filterDimensions(preciseReady ? M.timeSummary.current.hourly : EMPTY_TIME, effective) : U.filterDaily(M.hourly, effective);
-  }, [filters, focusedSource, M.hourly, M.timeSummary, preciseReady]);
+  const sourceContextRows = useMemo(() => filterUsage(usageRows, filters), [usageRows, filters, filterUsage]);
+  const filtered = useMemo(() => filterUsage(usageRows, effective), [usageRows, effective, filterUsage]);
+  const hourly = filters.precise ? (preciseReady ? M.timeSummary.current.hourly : EMPTY_TIME) : M.hourly;
+  const filteredHourly = useMemo(() => filterUsage(hourly, effective), [hourly, effective, filterUsage]);
 
   const totals = useMemo(() => U.aggregateTotals(filtered), [filtered]);
 
@@ -293,7 +292,6 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
   // ───── Comparison period ─────
   const compareData = useMemo(() => {
     if (!filters.compare) return { rows: null, dates: null, totals: null };
-    const scoped = { ...filters, ...(focusedSource ? { sources: new Set([focusedSource]) } : {}) };
     if (filters.precise) {
       const startMs = displayTimeMs(filters.startDateTime);
       const endMs = displayTimeMs(filters.endDateTime);
@@ -305,7 +303,8 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
       const prevStart = new Date(prevEnd.getTime() - span);
       const startDateTime = U.toDateTimeLocalValue(prevStart);
       const endDateTime = U.toDateTimeLocalValue(prevEnd);
-      const rows = filterDimensions(preciseReady ? M.timeSummary.previous?.daily || EMPTY_TIME : EMPTY_TIME, scoped);
+      const previous = preciseReady ? M.timeSummary.previous : null;
+      const rows = filterDimensions((byProvider ? previous?.projectDaily : previous?.daily) || EMPTY_TIME, effective);
       return {
         rows,
         dates: U.rangeDates(startDateTime.slice(0, 10), endDateTime.slice(0, 10)),
@@ -315,10 +314,10 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
     const days = dates.length;
     const endStr = U.addDays(filters.startDate, -1);
     const startStr = U.addDays(endStr, -(days - 1));
-    const rows  = U.filterDaily(M.daily, { ...scoped, startDate: startStr, endDate: endStr });
+    const rows = U.filterDaily(byProvider ? M.projectDaily : M.daily, { ...effective, startDate: startStr, endDate: endStr });
     const cDates = U.rangeDates(startStr, endStr);
     return { rows, dates: cDates, totals: U.aggregateTotals(rows) };
-  }, [filters, focusedSource, dates.length, M.daily, M.timeSummary, preciseReady]);
+  }, [filters, effective, byProvider, dates.length, M.daily, M.projectDaily, M.timeSummary, preciseReady]);
 
   // ───── Sparklines ─────
   const dailyTotalsByDay = useMemo(() => {
@@ -348,12 +347,9 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
       .map(d => ((read.get(d) || 0) / tot.get(d)) * 100);
   }, [filtered, dates]);
 
-  const filteredProjectRows = useMemo(() => {
-    const effective = { ...filters, ...(focusedSource ? { sources: new Set([focusedSource]) } : {}) };
-    return filters.precise ? filterDimensions(preciseReady ? M.timeSummary.current.projectDaily : EMPTY_TIME, effective)
-      : U.filterDaily(M.projectDaily || EMPTY_TIME, effective);
-  }, [filters, focusedSource, M.projectDaily, M.timeSummary, preciseReady]);
+  const filteredProjectRows = useMemo(() => filterUsage(projectRows, effective), [projectRows, effective, filterUsage]);
   const filteredSessions = useMemo(() => projectTotals(filteredProjectRows), [filteredProjectRows]);
+  const filteredProviders = useMemo(() => providerTotals(filteredProjectRows), [filteredProjectRows]);
 
   const filteredRuns = useMemo(() => {
     return M.runs.filter(r =>
@@ -363,8 +359,10 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
   }, [filters.sources, filters.devices, M.runs]);
 
   // ───── Export ─────
-  const detailQuery = useMemo(() => filters.precise && preciseReady && drill && drill.kind !== 'run'
-    ? eventQueryForFilters(filters, focusedSource, drill) : null, [filters, focusedSource, drill, preciseReady]);
+  const detailQuery = useMemo(() => {
+    if (!drill || drill.kind === 'run' || (filters.precise ? !preciseReady : !byProvider && drill.kind !== 'provider')) return null;
+    return eventQueryForFilters(filters, focusedSource, drill);
+  }, [filters, focusedSource, drill, preciseReady, byProvider]);
   const onExportAll = () => {
     const link = document.createElement('a');
     link.href = usageExportUrl(filters, focusedSource);
@@ -408,6 +406,7 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
         sourceOptions={sourceOptions}
         allDevices={allDevices}
         allModels={allModels}
+        allProviders={allProviders}
         availableRange={availableRange}
         onExport={onExportAll}
         onExportTrend={onExportTrend}
@@ -445,6 +444,7 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
         </div>
       ) : <>
       {filters.precise && <p className="muted" role="note">精确时间模式仅统计已采集的事件明细；没有事件记录的来源和历史区间不包含在内。</p>}
+      {byProvider && !filters.precise && <p className="muted" role="note">按 Provider 筛选时，以调用明细计算用量。只有日汇总的历史用量不计入。</p>}
       {/* KPI row */}
       <div className="kpi-row">
         <KPI label="总 Token" value={U.compactCN(totals.totalTokens)}
@@ -530,6 +530,7 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
             pricing={M.pricing}
             daily={filtered}
             sessions={filteredSessions}
+            providers={filteredProviders}
             runs={filteredRuns}
             sources={presentSources}
             totalTokens={totals.totalTokens}
@@ -538,7 +539,7 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
       </div>
 
       <AnimatePresence>
-        {drill && <DrillDrawer key="usage-detail" drill={drill} eventQuery={detailQuery} revision={M.timeRevision} daily={drill.kind === 'session' ? filteredProjectRows : filtered} rangeLabel={filters.precise ? `${filters.startDateTime} ~ ${filters.endDateTime}` : `${filters.startDate} ~ ${filters.endDate}`} onClose={() => setDrill(null)} />}
+        {drill && <DrillDrawer key="usage-detail" drill={drill} eventQuery={detailQuery} revision={M.timeRevision} daily={['session', 'provider'].includes(drill.kind) ? filteredProjectRows : filtered} rangeLabel={filters.precise ? `${filters.startDateTime} ~ ${filters.endDateTime}` : `${filters.startDate} ~ ${filters.endDate}`} onClose={() => setDrill(null)} />}
       </AnimatePresence>
       </>}
     </div>

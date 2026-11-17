@@ -50,7 +50,7 @@ test('summary makes one request and detail loading fetches only the requested pa
 });
 
 test('summary separates exact current/comparison bounds; drawer and export preserve active dimensions', () => {
-  const filters = { startDateTime: '2026-09-01T00:00:00Z', endDateTime: '2026-09-01T01:00:00Z', compare: true,
+  const filters = { precise: true, startDateTime: '2026-09-01T00:00:00Z', endDateTime: '2026-09-01T01:00:00Z', compare: true,
     sources: new Set(['Codex CLI', 'Claude Code']), devices: new Set(['laptop']), models: new Set(['m']) };
   assert.deepEqual(summaryRangeForFilters(filters), { start: '2026-09-01T00:00:00.000Z', end: '2026-09-01T01:00:00.000Z', compareStart: '2026-08-31T22:59:00.000Z', compareEnd: '2026-08-31T23:59:00.000Z' });
   const query = eventQueryForFilters(filters, 'Codex CLI', { kind: 'session', row: { source: 'Codex CLI', device: 'laptop', model: 'm', projectPath: '/a' } });

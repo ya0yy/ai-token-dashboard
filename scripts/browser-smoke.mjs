@@ -9,6 +9,7 @@ const app = await startServer({}, { staticDir: 'dist' });
 let browser;
 try {
   const time = Array.from({ length: 51 }, (_, index) => event({ usageDate: '2026-10-01', eventKey: `browser-${index}`,
+    provider: index < 25 ? 'openai' : index < 50 ? 'relay' : null,
     eventTime: new Date(Date.parse('2026-09-30T17:00:00Z') + index * 60_000).toISOString() }));
   assert.equal((await app.ingest({ time, daily: [
     usage({ usageDate: '2026-10-01', inputTokens: 5100, outputTokens: 510, totalTokens: 5610, costUSD: 51 }),
@@ -62,6 +63,30 @@ try {
 
   await page.getByRole('button', { name: '今天', exact: true }).click();
   await expectTotal('0.00561 M');
+  const table = page.locator('.table-panel');
+  await table.getByRole('button', { name: /^Provider 3$/ }).click();
+  const relayRow = table.getByRole('row').filter({ hasText: 'relay' });
+  assert.equal(await relayRow.locator('.num-strong').getAttribute('title'), '2,750');
+  assert.equal(await table.getByRole('row').filter({ hasText: '未记录 Provider' }).locator('.num-strong').getAttribute('title'), '110');
+  await relayRow.click();
+  await page.getByRole('region', { name: '事件明细' }).getByText('第 1 页 · 本页 25 条').waitFor();
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+
+  await page.getByRole('button', { name: '全部 Provider' }).click();
+  const options = page.locator('.filter-select-menu');
+  await options.getByRole('button', { name: 'openai', exact: true }).click();
+  await expectTotal('0.00275 M');
+  assert.equal(await table.locator('tbody tr').count(), 1);
+  await options.getByRole('button', { name: 'relay', exact: true }).click();
+  await expectTotal('0.0055 M');
+  await options.getByRole('button', { name: '清除选择' }).click();
+  await options.getByRole('button', { name: '未记录 Provider' }).click();
+  await expectTotal('0.00011 M');
+  await page.getByRole('button', { name: /清除筛选/ }).click();
+  await expectTotal('0.00561 M');
+  await table.getByRole('button', { name: /来源 \/ 设备/ }).click();
+
   let summaryFailure = true;
   await page.route('**/api/time/summary?**', route => summaryFailure ? (summaryFailure = false, route.fulfill({ status: 503, body: '{}' })) : route.continue());
   await page.locator('.dt-range-trigger').click();
@@ -98,11 +123,13 @@ try {
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator('.filterbar').scrollIntoViewIfNeeded();
+  await page.getByRole('button', { name: '全部 Provider' }).click();
   await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth).catch(async error => {
     console.error(await page.evaluate(() => [...document.querySelectorAll('body *')].filter(node => node.getBoundingClientRect().right > innerWidth + 1)
       .slice(0, 15).map(node => ({ tag: node.tagName, class: node.className, width: node.getBoundingClientRect().width, right: node.getBoundingClientRect().right }))));
     throw error;
   });
+  await page.getByRole('button', { name: '全部 Provider' }).click();
   await page.getByRole('link', { name: '复盘', exact: true }).click();
   await page.locator('.period-current').filter({ hasText: '2026 年 10 月 · Asia/Shanghai' }).waitFor();
   await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth).catch(async error => {

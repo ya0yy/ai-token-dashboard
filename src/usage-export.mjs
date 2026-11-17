@@ -1,4 +1,4 @@
-import { dateWhere, eventFilters, queryTime } from './usage-query.mjs';
+import { dateWhere, eventBounds, eventFilters, queryTime } from './usage-query.mjs';
 import { fromStored } from './db-batch.mjs';
 import { withReadSnapshot } from './db.mjs';
 import { mkdtemp, open, rm } from 'node:fs/promises';
@@ -21,21 +21,19 @@ export function csvCell(value) {
 export async function* usageCsvPages(db, input, pricingData) {
   const params = new URLSearchParams(input);
   const mode = params.get('mode') || 'daily';
-  if (!['daily', 'time'].includes(mode) || params.has('cursor') || params.has('limit') || (mode === 'daily' && params.has('project'))) {
+  if (!['daily', 'time'].includes(mode) || params.has('cursor') || params.has('limit')
+      || (mode === 'daily' && (params.has('project') || params.has('provider')))) {
     throw Object.assign(new Error('Invalid export parameters'), { status: 400 });
   }
   let where, filters;
   try {
     where = dateWhere(params); filters = eventFilters(db, params);
-    if (mode === 'time') {
-      // Validate explicit bounds before sending CSV headers; do not allow a
-      // moving default end time between pages.
-      const start = Date.parse(params.get('start')), end = Date.parse(params.get('end'));
-      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) throw new Error('Invalid time range');
-    }
+    // 固定导出边界，避免分批读取时默认结束时间变化。
+    if (mode === 'time') eventBounds(params, { requireExplicit: true });
   } catch (error) { error.status = 400; throw error; }
-  const columns = [mode === 'time' ? 'eventTime' : 'usageDate', ...fields];
-  let header = [mode === 'time' ? 'time' : 'date', ...titles].join(',') + '\r\n';
+  const prefix = mode === 'time' ? ['eventTime', 'provider'] : ['usageDate'];
+  const columns = [...prefix, ...fields];
+  let header = [mode === 'time' ? 'time,provider' : 'date', ...titles].join(',') + '\r\n';
   let cursor = null;
   const exact = column => db.driver === 'mysql' ? `${column} COLLATE utf8mb4_bin` : column;
   const keys = ['usage_date', 'device', 'source', 'model'];

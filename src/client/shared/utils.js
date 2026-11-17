@@ -150,7 +150,8 @@ function filterDaily(rows, f) {
     r.usageDate >= f.startDate && r.usageDate <= f.endDate &&
     (f.sources.size === 0 || f.sources.has(r.source)) &&
     (f.devices.size === 0 || f.devices.has(r.device)) &&
-    (f.models.size  === 0 || f.models.has(r.model))
+    (f.models.size  === 0 || f.models.has(r.model)) &&
+    (!f.providers?.size || f.providers.has(r.provider ?? ''))
   );
 }
 
@@ -235,7 +236,8 @@ function downloadCSV(filename, rows, columns) {
   const body = rows.map(r =>
     columns.map(c => {
       const v = typeof c.value === 'function' ? c.value(r) : r[c.field];
-      const s = v == null ? '' : String(v);
+      // 来源、模型和 Provider 等日志字段可能以电子表格公式符号开头。
+      const s = typeof v === 'string' && /^[\s]*[=+@-]/.test(v) ? "'" + v : String(v ?? '');
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     }).join(',')
   ).join('\n');

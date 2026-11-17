@@ -79,13 +79,16 @@ export function summaryRangeForFilters(filters) {
 }
 
 export function eventQueryForFilters(filters, focusedSource, drill) {
-  const query = { ...timeRangeForFilters({ ...filters, compare: false }), source: [...filters.sources], device: [...filters.devices], model: [...filters.models] };
+  const current = { ...filters, compare: false };
+  const range = filters.precise ? timeRangeForFilters(current) : dailyRangeForFilters(current);
+  const query = { ...range, source: [...filters.sources], device: [...filters.devices], model: [...filters.models], provider: [...(filters.providers ?? [])] };
   if (focusedSource) query.source = [focusedSource];
   if (drill?.kind === 'source') { query.source = [drill.row.source]; query.device = [drill.row.device]; }
   if (drill?.kind === 'model') { query.model = [drill.row.model]; if (!drill.allSources) query.source = [drill.row.source]; }
   if (drill?.kind === 'session') {
     query.source = [drill.row.source]; query.device = [drill.row.device]; query.model = [drill.row.model]; query.project = [drill.row.projectPath];
   }
+  if (drill?.kind === 'provider') query.provider = [drill.row.provider];
   return query;
 }
 
@@ -118,7 +121,8 @@ export async function fetchTimeSummary(range, { signal, fetcher = fetch } = {}) 
 
 export function filterDimensions(rows, filters) {
   return rows.filter(row => (!filters.sources.size || filters.sources.has(row.source))
-    && (!filters.devices.size || filters.devices.has(row.device)) && (!filters.models.size || filters.models.has(row.model)));
+    && (!filters.devices.size || filters.devices.has(row.device)) && (!filters.models.size || filters.models.has(row.model))
+    && (!filters.providers?.size || filters.providers.has(row.provider ?? '')));
 }
 
 export function summarySourceOptions(rows, filters) {
@@ -126,8 +130,20 @@ export function summarySourceOptions(rows, filters) {
   return U.sortSources([...new Set([...active, ...filters.sources])]).map(source => ({ source, hasUsage: active.has(source) }));
 }
 
+export const providerLabel = provider => provider || '未记录 Provider';
+
+export function providerTotals(rows) {
+  const grouped = new Map();
+  for (const row of rows) {
+    const provider = row.provider ?? '';
+    if (!grouped.has(provider)) grouped.set(provider, []);
+    grouped.get(provider).push(row);
+  }
+  return [...grouped].map(([provider, records]) => ({ provider, ...U.aggregateTotals(records) }));
+}
+
 export function usageExportUrl(filters, focusedSource) {
-  const query = filters.precise ? { mode: 'time', ...eventQueryForFilters(filters, focusedSource) }
+  const query = filters.precise || filters.providers?.size ? { mode: 'time', ...eventQueryForFilters(filters, focusedSource) }
     : { mode: 'daily', ...dailyRangeForFilters({ ...filters, compare: false }),
       source: focusedSource ? [focusedSource] : [...filters.sources], device: [...filters.devices], model: [...filters.models] };
   return `/api/export.csv?${queryParams(query)}`;

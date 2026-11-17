@@ -6,6 +6,7 @@ import { dateExpression, hourExpression } from './db.mjs';
 
 const tokens = ['input_tokens', 'output_tokens', 'cache_creation_tokens', 'cache_read_tokens', 'reasoning_output_tokens', 'total_tokens'];
 const bucket = row => JSON.stringify([row.device, row.source, row.usageDate, row.model]);
+const hourlyDimensions = ['device', 'source', 'model', 'provider'];
 
 export function savings(row, pricingData) {
   return calculateCacheSavings(row.model, {
@@ -29,16 +30,19 @@ export async function queryDaily(db, params, pricingData) {
     .map(row => fromStored('daily', row));
   // Project attribution comes exclusively from events that actually carry a
   // project. Legacy workspace totals cannot identify a day's project.
-  const dimensions = ['device', 'source', 'usage_date', 'model', 'project_path'];
-  const projects = await db.all(`SELECT ${dimensions.map(column => `${exact(db, column)} AS ${column}`).join(', ')},
+  const dimensions = ['device', 'source', 'usage_date', 'model', 'project_path', 'provider'];
+  const projects = await db.all(`SELECT ${dimensions.map(column => `${dimension(db, column)} AS ${column}`).join(', ')},
       MAX(event_time) AS last_activity, ${tokens.map(key => `SUM(${key}) AS ${key}`).join(', ')}, SUM(cost_usd) AS cost_usd
     FROM time_usage WHERE 1=1${where.sql}
-    GROUP BY ${dimensions.map(column => exact(db, column)).join(', ')} ORDER BY usage_date DESC`, where.values);
-  const projectDaily = projects.map(row => ({
-    ...fromStored('daily', row), projectPath: projectPath(row.project_path), lastActivity: row.last_activity,
-    id: JSON.stringify([row.device, row.source, row.usage_date, row.model, row.project_path]),
-    costBasis: 'event_details'
-  }));
+    GROUP BY ${dimensions.map(column => dimension(db, column)).join(', ')} ORDER BY usage_date DESC`, where.values);
+  const projectDaily = projects.map(row => {
+    const usage = fromStored('daily', row);
+    return {
+      ...usage, provider: row.provider, projectPath: projectPath(row.project_path), lastActivity: row.last_activity,
+      id: JSON.stringify(dimensions.map(column => row[column])),
+      costBasis: 'event_details', cacheSavedUSD: savings(usage, pricingData)
+    };
+  });
   const eventTotals = new Map();
   for (const row of projectDaily) {
     const key = bucket(row), current = eventTotals.get(key) || { totalTokens: 0, costUSD: 0 };
@@ -81,13 +85,12 @@ export async function queryHourly(db, params) {
   const utc = (date, days) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86400_000).toISOString();
   const where = `${start ? ` AND event_time >= ? AND ${localDate} >= ?` : ''}${end ? ` AND event_time < ? AND ${localDate} <= ?` : ''}`;
   const bounds = [...(start ? [utc(start, -1), values[0]] : []), ...(end ? [utc(end, 2), values.at(-1)] : [])];
-  const dimensions = ['device', 'source', 'model'];
-  const rows = await db.all(`SELECT ${dimensions.map(key => `${exact(db, key)} AS ${key}`).join(', ')},
+  const rows = await db.all(`SELECT ${hourlyDimensions.map(key => `${dimension(db, key)} AS ${key}`).join(', ')},
     ${localDate} AS local_date, ${localHour} AS local_hour, COUNT(*) AS event_count,
     SUM(total_tokens) AS total_tokens, SUM(cost_usd) AS cost_usd FROM time_usage
-    WHERE 1=1${where} GROUP BY ${dimensions.map(key => exact(db, key)).join(', ')}, ${localDate}, ${localHour}
+    WHERE 1=1${where} GROUP BY ${hourlyDimensions.map(key => dimension(db, key)).join(', ')}, ${localDate}, ${localHour}
     ORDER BY local_date DESC, local_hour DESC`, bounds);
-  return { hourly: rows.map(row => ({ device: row.device, source: row.source, model: row.model,
+  return { hourly: rows.map(row => ({ device: row.device, source: row.source, model: row.model, provider: row.provider,
     usageDate: row.local_date, hour: Number(row.local_hour), eventCount: Number(row.event_count),
     totalTokens: Number(row.total_tokens), costUSD: Number(row.cost_usd) })) };
 }
@@ -102,35 +105,50 @@ function timeRange(params, startKey = 'start', endKey = 'end') {
 
 // MySQL's default collation folds case; event and project identities do not.
 const exact = (db, column) => db.driver === 'mysql' ? `${column} COLLATE utf8mb4_bin` : column;
+// 空字符串和 NULL 都表示调用未记录 Provider，用同一个值汇总和筛选。
+const dimension = (db, column) => column === 'provider' ? `COALESCE(${exact(db, column)}, '')` : exact(db, column);
 export function eventFilters(db, params) {
   const filters = {}, values = [], clauses = [];
-  for (const [key, column] of [['source', 'source'], ['device', 'device'], ['model', 'model'], ['project', 'project_path']]) {
+  for (const [key, column] of [['source', 'source'], ['device', 'device'], ['model', 'model'], ['project', 'project_path'], ['provider', 'provider']]) {
     const selected = [...new Set(params.getAll(key))].sort();
     if (selected.length > 100 || selected.some(value => value.length > 4096)) throw new Error('Invalid event filters');
     if (!selected.length) continue;
     filters[key] = selected;
-    clauses.push(`${exact(db, column)} IN (${selected.map(() => '?').join(',')})`);
+    clauses.push(`${dimension(db, column)} IN (${selected.map(() => '?').join(',')})`);
     values.push(...selected);
   }
   return { key: JSON.stringify(filters), values, sql: clauses.length ? ' AND ' + clauses.join(' AND ') : '' };
 }
 
+export function eventBounds(params, { requireExplicit = false } = {}) {
+  // 快捷范围按入库时的用量日期汇总，明细和下载也沿用同一日期口径。
+  if (params.has('startDate') || params.has('endDate')) {
+    const startDate = params.get('startDate'), endDate = params.get('endDate');
+    if (!startDate || !endDate || params.has('start') || params.has('end')) throw new Error('Invalid event date range');
+    return { range: { startDate, endDate }, where: dateWhere(params) };
+  }
+  if (requireExplicit && (!params.get('start') || !params.get('end'))) throw new Error('Invalid time range');
+  const range = timeRange(params);
+  return { range, where: { sql: ' AND event_time >= ? AND event_time <= ?', values: [range.start, range.end] } };
+}
+
 export async function queryTime(db, params, pricingData) {
-  const range = timeRange(params), filters = eventFilters(db, params);
+  const { range, where } = eventBounds(params), filters = eventFilters(db, params);
   const limit = Number(params.get('limit') || 1000);
   if (!Number.isInteger(limit) || limit < 1 || limit > 2000) throw new Error('limit must be between 1 and 2000');
-  const values = [range.start, range.end, ...filters.values];
+  const values = [...where.values, ...filters.values];
   const order = ['event_time', 'device', 'source', 'event_key'].map(column => exact(db, column)).join(', ');
   let cursorWhere = '';
   if (params.has('cursor')) {
     let cursor;
     try { cursor = JSON.parse(Buffer.from(params.get('cursor'), 'base64url').toString()); } catch { throw new Error('Invalid cursor'); }
-    if (!cursor || cursor.start !== range.start || cursor.end !== range.end || (cursor.filters || '{}') !== filters.key || !Array.isArray(cursor.last)
+    if (!cursor || Object.entries(range).some(([key, value]) => cursor[key] !== value)
+        || (cursor.filters || '{}') !== filters.key || !Array.isArray(cursor.last)
         || cursor.last.length !== 4 || cursor.last.some(v => typeof v !== 'string' || v.length > 4096)) throw new Error('Invalid cursor');
     cursorWhere = ` AND (${order}) > (?, ?, ?, ?)`;
     values.push(...cursor.last);
   }
-  const raw = await db.all(`SELECT * FROM time_usage WHERE event_time >= ? AND event_time <= ?${filters.sql}${cursorWhere}
+  const raw = await db.all(`SELECT * FROM time_usage WHERE 1=1${where.sql}${filters.sql}${cursorWhere}
     ORDER BY ${order} LIMIT ?`, [...values, limit + 1]);
   const more = raw.length > limit;
   const page = raw.slice(0, limit);
@@ -176,9 +194,9 @@ export async function queryTimeSummary(db, params, pricingData) {
   const bounds = [range.start, range.end, ...(previousRange ? [previousRange.start, previousRange.end] : [])];
   const models = await db.all(`SELECT DISTINCT ${exact(db, 'model')} AS model FROM time_usage WHERE ${where}`, bounds);
   const cache = savingsExpression(db, models, pricingData);
-  const dimensions = ['device', 'source', 'usage_date', 'model', 'project_path', 'cost_basis', 'pricing_version'];
-  const columns = dimensions.map(column => `${exact(db, column)} AS ${column}`).join(', ');
-  const groups = dimensions.map(column => exact(db, column)).join(', ');
+  const dimensions = ['device', 'source', 'usage_date', 'model', 'project_path', 'provider', 'cost_basis', 'pricing_version'];
+  const columns = dimensions.map(column => `${dimension(db, column)} AS ${column}`).join(', ');
+  const groups = dimensions.map(column => dimension(db, column)).join(', ');
   const period = "CASE WHEN event_time >= ? AND event_time <= ? THEN 'current' ELSE 'previous' END";
   const projects = await db.all(`SELECT ${period} AS period, ${columns}, MAX(event_time) AS last_activity,
       COUNT(*) AS event_count, ${tokens.map(key => `SUM(${key}) AS ${key}`).join(', ')}, SUM(cost_usd) AS cost_usd,
@@ -187,9 +205,9 @@ export async function queryTimeSummary(db, params, pricingData) {
     [range.start, range.end, ...cache.values, ...bounds]);
   const hour = hourExpression(db.driver), date = dateExpression(db.driver);
   const hourly = await db.all(`SELECT ${period} AS period,
-      ${['device', 'source', 'model'].map(column => `${exact(db, column)} AS ${column}`).join(', ')},
+      ${hourlyDimensions.map(column => `${dimension(db, column)} AS ${column}`).join(', ')},
       ${date} AS local_date, ${hour} AS local_hour, COUNT(*) AS event_count, SUM(total_tokens) AS total_tokens, SUM(cost_usd) AS cost_usd
-    FROM time_usage WHERE ${where} GROUP BY period, ${['device', 'source', 'model'].map(column => exact(db, column)).join(', ')}, local_date, local_hour`,
+    FROM time_usage WHERE ${where} GROUP BY period, ${hourlyDimensions.map(column => dimension(db, column)).join(', ')}, local_date, local_hour`,
     [range.start, range.end, ...bounds]);
   const empty = () => ({ daily: [], projectDaily: [], hourly: [], eventCount: 0 });
   const result = { range, previousRange, current: empty(), previous: previousRange ? empty() : null };
@@ -198,7 +216,7 @@ export async function queryTimeSummary(db, params, pricingData) {
     const row = { ...fromStored('daily', stored), projectPath: projectPath(stored.project_path), lastActivity: stored.last_activity,
       eventCount: Number(stored.event_count), cacheSavedUSD: Number(stored.cache_saved) };
     const target = result[stored.period];
-    target.projectDaily.push(row);
+    target.projectDaily.push({ ...row, provider: stored.provider });
     target.eventCount += row.eventCount;
     const key = bucket(row), existing = daily[stored.period].get(key);
     if (!existing) daily[stored.period].set(key, { ...row, id: key, projectPath: null });
@@ -209,7 +227,7 @@ export async function queryTimeSummary(db, params, pricingData) {
     }
   }
   for (const period of ['current', 'previous']) if (result[period]) result[period].daily = [...daily[period].values()];
-  for (const row of hourly) result[row.period].hourly.push({ device: row.device, source: row.source, model: row.model,
+  for (const row of hourly) result[row.period].hourly.push({ device: row.device, source: row.source, model: row.model, provider: row.provider,
     usageDate: row.local_date, hour: Number(row.local_hour), eventCount: Number(row.event_count), totalTokens: Number(row.total_tokens), costUSD: Number(row.cost_usd) });
   return result;
 }

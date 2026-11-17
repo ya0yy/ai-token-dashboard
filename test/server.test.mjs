@@ -149,3 +149,42 @@ test('HTTP: range summary is authenticated, includes all events, and validates c
     assert.equal((await fetch(app.base + `/api/time/summary?${range}&compareStart=invalid`, { headers })).status, 400);
   } finally { await app.close(); }
 });
+
+test('HTTP: provider totals separate calls that share the same model, project and hour', async () => {
+  const app = await startServer();
+  try {
+    assert.equal((await app.ingest({ daily: [usage({ totalTokens: 550 })], time: [
+      event({ provider: 'openai' }), event({ eventKey: 'relay', provider: 'relay' }),
+      event({ eventKey: 'relay-2', provider: 'relay' }), event({ eventKey: 'missing' })
+    ] })).status, 200);
+    const dates = 'startDate=2026-09-01&endDate=2026-09-01';
+    const read = async path => {
+      const response = await fetch(app.base + path, { signal: AbortSignal.timeout(5000) });
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const expected = { '': 110, openai: 110, relay: 220 };
+    const byProvider = rows => Object.fromEntries(rows.map(row => [row.provider ?? '', row.totalTokens]));
+    const days = await read('/api/data?' + dates);
+    assert.equal(days.daily[0].totalTokens, 550); // 保留只有日汇总的额外用量。
+    assert.deepEqual(byProvider(days.projectDaily), expected);
+    assert.deepEqual(byProvider((await read('/api/hourly?' + dates)).hourly), expected);
+    const { current } = await read('/api/time/summary?' + range);
+    assert.deepEqual(byProvider(current.projectDaily), expected);
+    assert.deepEqual(byProvider(current.hourly), expected);
+    const relay = await read('/api/time?' + dates + '&provider=relay&limit=1');
+    assert.deepEqual(relay.time.map(row => row.provider), ['relay']);
+    assert.ok(relay.nextCursor);
+    const next = await read('/api/time?' + dates + '&provider=relay&limit=1&cursor=' + relay.nextCursor);
+    assert.deepEqual(next.time.map(row => row.eventKey), ['relay-2']);
+    const missing = await read('/api/time?' + dates + '&provider=');
+    assert.deepEqual(missing.time.map(row => row.eventKey), ['missing']);
+    const csv = await fetch(app.base + '/api/export.csv?mode=time&' + dates + '&provider=relay',
+      { signal: AbortSignal.timeout(5000) });
+    assert.equal(csv.status, 200);
+    const [header, ...lines] = (await csv.text()).trim().split('\r\n');
+    assert.ok(header.split(',').includes('provider'));
+    assert.equal(lines.length, 2);
+    assert.ok(lines.every(line => line.split(',').includes('relay')));
+  } finally { await app.close(); }
+});
