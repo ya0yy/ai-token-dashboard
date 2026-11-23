@@ -224,6 +224,8 @@ function FilterBar({ f, setF, allSources, sourceOptions, allDevices, allModels, 
   }, []);
   const RANGES = [
     { id: 'today', label: '今天', days: 1  },
+    { id: 'yesterday', label: '昨天', days: 1, endDaysAgo: 1 },
+    { id: 'day-before-yesterday', label: '前天', days: 1, endDaysAgo: 2 },
     { id: '7d',  label: '7 天',  days: 7  },
     { id: '14d', label: '14 天', days: 14 },
     { id: '30d', label: '30 天', days: 30 },
@@ -244,8 +246,12 @@ function FilterBar({ f, setF, allSources, sourceOptions, allDevices, allModels, 
       });
       return;
     }
-    const startDate = U.daysAgo(r.days - 1);
-    const endDate = U.daysAgo(0);
+    // 按展示时区确定结束日，再从同一天反推开始日，避免点击时跨午夜。
+    const endDate = U.daysAgo(r.endDaysAgo ?? 0);
+    const startDate = U.addDays(endDate, 1 - r.days);
+    if (import.meta.env.DEV) {
+      console.debug(`已选择时间快捷筛选，rangeId: ${r.id}, startDate: ${startDate}, endDate: ${endDate}, timeZone: ${displayTimeZone()}`);
+    }
     setF({
       ...f,
       rangeId: r.id,

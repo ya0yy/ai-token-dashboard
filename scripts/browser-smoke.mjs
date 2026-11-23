@@ -13,7 +13,7 @@ try {
     eventTime: new Date(Date.parse('2026-09-30T17:00:00Z') + index * 60_000).toISOString() }));
   assert.equal((await app.ingest({ time, daily: [
     usage({ usageDate: '2026-10-01', inputTokens: 5100, outputTokens: 510, totalTokens: 5610, costUSD: 51 }),
-    usage({ usageDate: '2026-09-30' }), usage({ usageDate: '2026-09-20', inputTokens: 200, outputTokens: 20, totalTokens: 220 })
+    usage({ usageDate: '2026-09-30' }), usage({ usageDate: '2026-09-29', inputTokens: 200, outputTokens: 20, totalTokens: 220 })
   ] })).status, 200);
   browser = await chromium.launch();
   const context = await browser.newContext({ timezoneId: 'UTC', viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
@@ -60,6 +60,15 @@ try {
   await expectTotal('0.00594 M'); releaseOld();
   await page.unroute('**/api/data?**', delayed);
   assert.equal(await total.textContent(), '0.00594 M');
+
+  // 浏览器还在 9 月，但看板时区已进入 10 月。每个快捷筛选只统计对应的一天。
+  for (const [name, date, tokens] of [['昨天', '2026-09-30', '0.00011 M'], ['前天', '2026-09-29', '0.00022 M']]) {
+    const preset = page.getByRole('button', { name, exact: true });
+    await preset.click();
+    assert.equal(await preset.getAttribute('aria-pressed'), 'true');
+    await page.getByRole('button', { name: `${date} ~ ${date}`, exact: true }).waitFor();
+    await expectTotal(tokens);
+  }
 
   await page.getByRole('button', { name: '今天', exact: true }).click();
   await expectTotal('0.00561 M');

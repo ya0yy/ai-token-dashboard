@@ -2160,7 +2160,13 @@ table.dt tbody tr.selected { background: var(--accent-soft); }
 .app .filter-row-primary .chip { height: 32px; min-width: 42px; justify-content: center; }
 .app .filter-row-primary .dt-range-trigger { height: 38px; box-sizing: border-box; }
 @media (max-width: 640px) {
-  .app .filter-row-primary .chip-row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); width: 100%; gap: 0; }
+  .app .filter-row-primary .chip-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
+    height: auto;
+    gap: 0;
+  }
   .app .filter-row-primary .chip { min-width: 0; padding: 0 5px; }
 }
 .app .filter-label { font-size: 12px; }
