@@ -131,10 +131,6 @@ body::before {
   height: 26px;
   flex: 0 0 auto;
   object-fit: contain;
-  box-sizing: border-box;
-  padding: 2px;
-  border-radius: 7px;
-  background: var(--ink);
 }
 .brand-name {
   font-weight: 600;

@@ -9,7 +9,7 @@ import { fetchDailyRange, dailyRangeForFilters } from '../shared/usage-data.js';
 import { useRangeQuery } from '../shared/use-range-query.js';
 import { RU } from './utils.js';
 import { ThemeToggle } from '../shared/ThemeToggle.jsx';
-import tokenStudioFlow from '../assets/token-studio-flow.png';
+import tokenStudioIcon from '../assets/token-studio-tks.png';
 import { HeroSection, ProjectSection, CalendarSection } from './sections-1.jsx';
 import { ToolsSection, EfficiencySection, InsightsSection } from './sections-2.jsx';
 import './styles.css';
@@ -155,7 +155,7 @@ function ReviewDashboard({ rawData, period, periodId, setPeriodId, queryState })
       <nav className="review-nav">
         <div className="review-nav-inner">
           <div className="brand-line">
-            <img className="review-brand-mark" src={tokenStudioFlow} alt="Token Studio" />
+            <img className="review-brand-mark" src={tokenStudioIcon} alt="Token Studio" />
             <span className="brand-name">Token Studio</span>
             <div className="page-switch">
               <a href="/" className="page-chip">看板</a>

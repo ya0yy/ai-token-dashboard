@@ -11,7 +11,7 @@ import { providerLabel } from '../shared/usage-data.js';
 import { displayTimeZone } from '../shared/display-time.js';
 import { ThemeToggle } from '../shared/ThemeToggle.jsx';
 import { quotaWindowLabel, orderQuotaWindows } from '../shared/quota.js';
-import tokenStudioFlow from '../assets/token-studio-flow.png';
+import tokenStudioIcon from '../assets/token-studio-tks.png';
 import claudeIcon from './icons/claude.svg';
 import gptIcon from './icons/gpt.svg';
 import { sourceIcon, sourceIconScale } from './source-icons.js';
@@ -156,7 +156,7 @@ function Topbar({ lastSync, onRefresh, refreshing, onCollect, collecting, collec
     <div className="topbar">
       <div className="topbar-left">
         <div className="brand">
-          <img className="dashboard-brand-mark" src={tokenStudioFlow} alt="Token Studio" />
+          <img className="dashboard-brand-mark" src={tokenStudioIcon} alt="Token Studio" />
           <div>
             <h1>Token Studio</h1>
             <p className="brand-sub">个人 AI Token 消耗看板</p>

@@ -229,11 +229,6 @@ button, input, select { font-family: inherit; color: inherit; }
   height: 48px;
   flex: 0 0 auto;
   object-fit: contain;
-  box-sizing: border-box;
-  padding: 3px;
-  border-radius: 14px;
-  background: linear-gradient(145deg, oklch(0.27 0.025 265), oklch(0.16 0.01 265));
-  box-shadow: 0 4px 12px rgb(20 18 30 / 0.16);
 }
 
 .brand h1 {
