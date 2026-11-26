@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { openDb } from '../src/db.mjs';
+import { openDb, recordRun } from '../src/db.mjs';
 import { batchUpsertTimeUsage } from '../src/db-batch.mjs';
 import { startServer, event, usage } from './helpers/server.mjs';
 import { serverAccess } from '../src/http-security.mjs';
@@ -100,6 +100,53 @@ test('HTTP: reject malformed usage before mutation; full replacements require ex
     assert.equal((await app.ingest({ mode: 'full', scopes, daily: [], time: [], sessions: [] })).status, 200);
     assert.equal((await (await fetch(app.base + '/api/data')).json()).daily.length, 0, 'scope identities containing delimiters must remain distinct');
   } finally { await app.close(); }
+});
+
+test('HTTP: 设备成功上报后返回同步时间，日期筛选不影响该时间', { timeout: 15000 }, async () => {
+  const app = await startServer();
+  try {
+    const read = async () => {
+      const response = await fetch(app.base + '/api/data?startDate=2026-08-01&endDate=2026-08-01', {
+        signal: AbortSignal.timeout(5000)
+      });
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const startedAt = Date.now();
+    const uploaded = await fetch(app.base + '/api/ingest', {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pricing: 'hub', time: [event()] }), signal: AbortSignal.timeout(5000)
+    });
+    assert.equal(uploaded.status, 200);
+    const data = await read();
+    assert.deepEqual(data.daily, []);
+    assert.deepEqual(data.runs, []);
+    const syncedAt = Date.parse(data.lastSyncAt);
+    assert.ok(syncedAt >= startedAt && syncedAt <= Date.now(), `最后同步应为上报入库时间，实际值: ${data.lastSyncAt}`);
+
+    assert.equal((await app.ingest({ daily: [usage({ totalTokens: -1 })] })).status, 400);
+    assert.equal((await app.ingest({})).status, 200);
+    assert.equal((await read()).lastSyncAt, data.lastSyncAt);
+  } finally { await app.close(); }
+});
+
+test('HTTP: 已有用量没有采集记录时显示最近写入时间', { timeout: 15000 }, async () => {
+  const app = await startServer();
+  const db = await openDb(join(app.root, 'usage.sqlite'));
+  try {
+    const read = async () => {
+      const response = await fetch(app.base + '/api/data', { signal: AbortSignal.timeout(5000) });
+      assert.equal(response.status, 200);
+      return (await response.json()).lastSyncAt;
+    };
+    await batchUpsertTimeUsage(db, [event(), event({ eventKey: 'updated-later' })]);
+    await db.run('UPDATE time_usage SET updated_at = ?', ['2026-11-24T09:00:00.000Z']);
+    await db.run('UPDATE time_usage SET updated_at = ? WHERE event_key = ?', ['2026-11-24 14:00:00', 'updated-later']);
+    assert.equal(await read(), '2026-11-24T14:00:00.000Z');
+
+    await recordRun(db, { device: 'laptop', source: 'Codex CLI', status: 'ok', collectedAt: '2026-11-25T08:30:00+08:00' });
+    assert.equal(await read(), '2026-11-25T00:30:00.000Z');
+  } finally { await db.close(); await app.close(); }
 });
 
 test('HTTP: projects use their actual events, historical differences remain visible, and hourly buckets respect DISPLAY_TZ', async () => {

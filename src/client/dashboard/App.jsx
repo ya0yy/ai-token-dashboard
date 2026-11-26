@@ -386,7 +386,7 @@ function Dashboard({ M, filters, setFilters, refreshing, collecting, collectStat
     );
   };
 
-  const lastSync = M.runs[0] ? U.formatTs(M.runs[0].collectedAt.replace(' ', 'T')) : '—';
+  const lastSync = U.formatTs(M.lastSyncAt ?? M.runs[0]?.collectedAt);
 
   return (
     <div className="app">

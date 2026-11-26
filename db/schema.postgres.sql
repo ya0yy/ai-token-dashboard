@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS collection_runs (
   command TEXT
 );
 
+CREATE TABLE IF NOT EXISTS ingest_state (
+  id INTEGER PRIMARY KEY,
+  received_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS daily_usage (
   device TEXT NOT NULL,
   source TEXT NOT NULL,

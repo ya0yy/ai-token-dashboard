@@ -18,7 +18,7 @@ import { editableSchedule } from './pricing-schedule.mjs';
 import { queryQuota } from './quota.mjs';
 import { authorize, isLoopback, serverAccess, trustedRequest } from './http-security.mjs';
 import { validDate, validateIngest } from './ingest-validation.mjs';
-import { queryDaily, queryTime, queryTimeSummary, queryUsageMetadata, queryHourly, dateWhere } from './usage-query.mjs';
+import { queryDaily, queryTime, queryTimeSummary, queryUsageMetadata, queryLastSyncAt, queryHourly, dateWhere } from './usage-query.mjs';
 import { invalidateCollectionState } from './collection-state.mjs';
 import { collectionNotifications } from './collection-notifications.mjs';
 import { streamUsageCsv } from './usage-export.mjs';
@@ -150,6 +150,7 @@ async function handleApi(req, url, res) {
 
     sendJson(res, {
       ...await queryUsageMetadata(db),
+      lastSyncAt: await queryLastSyncAt(db, rawRuns[0]?.collectedAt),
       pricing: {
         primarySnapshotAt: pricingSnapshotTime(),
         models: Object.fromEntries([...new Set(rawDaily.map(d => d.model))]
@@ -370,7 +371,8 @@ async function handleIngest(req, res) {
     }
 
     const removeTime = payload.removeTime ?? [];
-    const { writtenDaily, removed } = await db.transaction(async (tx) => {
+    const writesUsage = fullRebuild || dailyRows.length > 0 || timeRows.length > 0 || sessionRows.length > 0 || removeTime.length > 0;
+    const { writtenDaily, removed, receivedAt } = await db.transaction(async (tx) => {
       const scopes = [...new Map([...payload.scopes, ...dailyRows, ...timeRows, ...sessionRows, ...removeTime]
         .map(({ device, source }) => [JSON.stringify([device, source]), { device, source }])).values()];
       await invalidateCollectionState(tx, scopes);
@@ -394,14 +396,23 @@ async function handleIngest(req, res) {
       }
       await batchUpsertSession(tx, sessionRows);
       for (const row of runRows) await recordRun(tx, row);
-      return { writtenDaily: dayCount, removed };
+
+      // 上报时间和用量一起提交。空请求不产生同步记录，清空范围的全量上报仍算一次同步。
+      const receivedAt = writesUsage ? new Date().toISOString() : null;
+      if (receivedAt) {
+        const update = tx.driver === 'mysql' ? 'ON DUPLICATE KEY UPDATE received_at = VALUES(received_at)'
+          : 'ON CONFLICT(id) DO UPDATE SET received_at = excluded.received_at';
+        await tx.run(`INSERT INTO ingest_state (id, received_at) VALUES (1, ?) ${update}`, [receivedAt]);
+      }
+      return { writtenDaily: dayCount, removed, receivedAt };
     });
 
     // The hub stays up across many ingests; keep collection_runs bounded.
     if (runRows.length) await pruneCollectionRuns(db);
 
-    if (pricing) {
-      console.log(`[用量入库] Hub 已计价，调用数: ${timeRows.length}，日汇总数: ${writtenDaily}，价格版本: ${pricing.version}`);
+    if (receivedAt) {
+      const pricingVersion = pricing ? `，价格版本: ${pricing.version}` : '';
+      console.log(`[用量入库] 设备上报已写入，接收时间: ${receivedAt}，调用数: ${timeRows.length}，日汇总数: ${writtenDaily}${pricingVersion}`);
     }
     if (removed) console.log(`[用量入库] 已移除重复子代理汇总，记录数: ${removed}`);
     sendJson(res, { ok: true, mode: fullRebuild ? 'full' : 'incremental', daily: writtenDaily, time: timeRows.length, sessions: sessionRows.length, runs: runRows.length });

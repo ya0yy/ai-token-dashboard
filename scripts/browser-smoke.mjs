@@ -34,6 +34,9 @@ try {
   await page.getByRole('heading', { name: 'Token Studio', exact: true }).waitFor();
   await page.getByText('时间（Asia/Shanghai）', { exact: true }).waitFor();
   assert.match(await page.locator('.dt-range-trigger').innerText(), /2026-10-01/);
+  const syncLabel = page.locator('.sync-pill strong');
+  const lastSync = await syncLabel.innerText();
+  assert.match(lastSync, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   assert.ok(!requests.some(url => /\/ReviewApp-.*\.js/.test(url)), 'dashboard must not load the review bundle');
 
   const total = page.locator('.kpi').first().locator('.visually-hidden');
@@ -69,6 +72,7 @@ try {
     await page.getByRole('button', { name: `${date} ~ ${date}`, exact: true }).waitFor();
     await expectTotal(tokens);
   }
+  assert.equal(await syncLabel.innerText(), lastSync);
 
   await page.getByRole('button', { name: '今天', exact: true }).click();
   await expectTotal('0.00561 M');

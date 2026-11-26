@@ -8,6 +8,11 @@ CREATE TABLE IF NOT EXISTS collection_runs (
   command TEXT
 );
 
+CREATE TABLE IF NOT EXISTS ingest_state (
+  id INTEGER PRIMARY KEY,
+  received_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS collection_checkpoints (
   scope_key VARCHAR(64) PRIMARY KEY,
   state_json TEXT NOT NULL

@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS collection_runs (
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS ingest_state (
+  id INTEGER PRIMARY KEY,
+  received_at VARCHAR(40) NOT NULL
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS daily_usage (
   row_key CHAR(64) NOT NULL,
   device VARCHAR(255) NOT NULL,

@@ -1,4 +1,4 @@
-import { fromStored } from './db-batch.mjs';
+import { fromStored, TABLES } from './db-batch.mjs';
 import { calculateCost, calculateCacheSavings } from './pricing.mjs';
 import { validDate } from './ingest-validation.mjs';
 import { projectPath } from './project-identity.mjs';
@@ -73,6 +73,24 @@ export async function queryUsageMetadata(db) {
     eventRange: { start: events.start_time, end: events.end_time },
     dimensions: Object.fromEntries(['device', 'source', 'model'].map(key => [`${key}s`, [...new Set(dimensions.map(row => row[key]).filter(Boolean))].sort()]))
   };
+}
+
+function utcTimestamp(value) {
+  if (!value) return NaN;
+  const iso = value.replace(' ', 'T');
+  return Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`);
+}
+
+export async function queryLastSyncAt(db, collectedAt) {
+  const state = await db.get('SELECT received_at FROM ingest_state WHERE id = 1');
+  const timestamps = [state?.received_at, collectedAt].map(utcTimestamp).filter(Number.isFinite);
+  if (timestamps.length) return new Date(Math.max(...timestamps)).toISOString();
+
+  // 兼容没有上报时间和采集记录的旧库。SQLite 和远程库写入的 UTC 时间使用不同分隔符。
+  const writes = Object.values(TABLES).map(({ table }) => `SELECT MAX(REPLACE(updated_at, ' ', 'T')) AS updated_at FROM ${table}`);
+  const legacy = await db.get(`SELECT MAX(updated_at) AS updated_at FROM (${writes.join(' UNION ALL ')}) AS usage_writes`);
+  const latest = utcTimestamp(legacy.updated_at);
+  return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
 }
 
 export async function queryHourly(db, params) {
